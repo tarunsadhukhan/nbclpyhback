@@ -1,0 +1,46 @@
+feature: "Indent Create API v1"
+owner: "procurement"
+status: "draft"
+http:
+  method: POST
+  path: "/api/v1/indents"
+  auth: "required"
+  request:
+    contentType: "application/json"
+    body:
+      type: "IndentCreateDTO"
+      fields:
+        - { name: tenant_id, type: string, required: true }
+        - { name: indent_no, type: string, required: true }
+        - { name: indent_date, type: string, format: date, required: true }
+        - { name: branch_id, type: string, required: true }
+        - { name: remarks, type: string, required: false }
+        - name: lines
+          type: array
+          itemType: "IndentLineDTO"
+          required: true
+  response:
+    "201":
+      body:
+        type: "IndentDTO"
+        fields:
+          - { name: id, type: string }
+          - { name: indent_no, type: string }
+          - { name: status, type: string, enum: [DRAFT, SUBMITTED] }
+          - name: lines
+            type: array
+            itemType: "IndentLineDTO"
+IndentLineDTO:
+  fields:
+    - { name: item_id, type: string, required: true }
+    - { name: qty, type: number, required: true }
+    - { name: uom, type: string, required: true }
+    - { name: need_by, type: string, format: date, required: false }
+non_functional:
+  - "must validate tenant scope from cookie/jwt"
+  - "idempotent by (tenant_id, indent_no)"
+  - "return 409 on duplicate indent_no within tenant"
+tests:
+  - "happy path: create + 201 with lines"
+  - "validation: missing item_id -> 422"
+  - "dup: same tenant_id + indent_no -> 409"

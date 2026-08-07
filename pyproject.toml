@@ -1,0 +1,50 @@
+[project]
+name = "VOWERP3BE"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "bcrypt==3.2.0",
+    "boto3>=1.43.14",
+    "cryptography>=44.0.3",
+    "dlib-bin>=19.24",
+    "dotenv>=0.9.9",
+    "face-recognition>=1.3.0",
+    "fastapi>=0.115.11",
+    "flask>=3.1.3",
+    "flask-cors>=6.0.2",
+    "mysql-connector-python>=9.7.0",
+    "numpy>=2.4.6",
+    "opencv-python-headless>=4.13.0.92",
+    "openpyxl==3.1.5",
+    "passlib>=1.7.4",
+    "pillow>=12.1.1",
+    "pyjwt>=2.10.1",
+    "pymysql>=1.1.1",
+    "pytest>=9.0.2",
+    "python-dotenv>=1.0.1",
+    "python-multipart>=0.0.20",
+    "setuptools<81",
+    "reportlab>=4.0.0",
+    "sqlalchemy>=2.0.38",
+    "sqlmodel>=0.0.24",
+    "starlette>=0.46.1",
+    "uvicorn>=0.34.0",
+    "face-recognition-models>=0.3.0",
+]
+
+[tool.uv]
+# face-recognition pulls in `dlib`, which has no prebuilt wheel and would be
+# compiled from source (requires cmake/g++/make at build time). Override it with
+# an impossible platform marker so the source `dlib` is never installed; the
+# prebuilt `dlib-bin` wheel above provides the importable `dlib` module instead.
+override-dependencies = ["dlib; platform_system == 'NoSuchOS'"]
+
+[tool.uv.sources]
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta" 
