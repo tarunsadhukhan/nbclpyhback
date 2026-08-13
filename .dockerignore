@@ -1,0 +1,36 @@
+# .git is the important one: the Dockerfile does COPY . ., so without this the
+# image ships the full history — including the env/*.env credentials that were
+# committed before they were untracked.
+.git
+.github
+.gitignore
+
+.venv
+venv
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+dist/
+build/
+*.egg-info/
+graphify-out/
+node_modules/
+
+.claude/
+.cursor/
+.vscode/
+.devcontainer/
+docs/
+*.md
+
+*.xlsx
+*.rar
+*.zip
+*.bak
+*.log
+
+# Runtime config comes from compose env_file on the VPS, never from the image.
+env/*.env
+.env

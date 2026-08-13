@@ -13,6 +13,7 @@
 
 …and on making the behavior **configurable per company**, since each company functions slightly differently.
 
+
 ---
 
 ## 1. Executive Summary

@@ -1,8 +1,9 @@
 services:
   nbclerp-backend:
+    # No build: stanza on purpose. Only docker-compose.yml is scp'd to the VPS,
+    # so a build fallback there can only fail with a confusing "no such file:
+    # Dockerfile". CI builds and pushes; the VPS pulls.
     image: ghcr.io/tarunsadhukhan/nbclerp3be:latest
-    build:
-      context: .
     container_name: nbclerp-backend
     restart: unless-stopped
     # Host 8001 -> container 8000, so nginx for nbclapi.infoskyglobalit.in

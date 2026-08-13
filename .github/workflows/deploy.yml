@@ -31,6 +31,12 @@ jobs:
         with:
           context: .
           push: true
+          # This label is what links the GHCR package to this repository.
+          # Without it the package is standalone, and the repo-scoped
+          # GITHUB_TOKEN can push but NOT pull it — the VPS then gets
+          # "error from registry: denied" on docker compose pull.
+          labels: |
+            org.opencontainers.image.source=https://github.com/tarunsadhukhan/nbclpyhback
           tags: |
             ghcr.io/tarunsadhukhan/nbclerp3be:latest
             ghcr.io/tarunsadhukhan/nbclerp3be:${{ github.sha }}
