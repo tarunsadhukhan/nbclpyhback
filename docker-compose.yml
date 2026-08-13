@@ -5,8 +5,11 @@ services:
       context: .
     container_name: nbclerp-backend
     restart: unless-stopped
+    # Host 8001 -> container 8000, so nginx for nbclapi.infoskyglobalit.in
+    # proxies to :8001. The container still listens on 8000 internally, which
+    # is what NEXT_PUBLIC_BACKENDHOST=http://nbclerp-backend:8000 targets.
     ports:
-      - "8000:8000"
+      - "8001:8000"
     # .env lives on the VPS at /opt/nbjcl/nbclerp3be/.env and is NOT in git.
     # The app calls load_dotenv("env/database.env"), but those vars are already
     # in the container environment from here, so os.getenv() finds them anyway.
