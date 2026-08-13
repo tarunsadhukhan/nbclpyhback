@@ -14,7 +14,7 @@ def get_active_subdomains_from_db():
             result = session.execute(
                 text("""
                     SELECT LOWER(TRIM(con_org_shortname)) as shortname
-                    FROM vowconsole3.con_org_master
+                    FROM maindata.con_org_master
                     WHERE active = 1
                       AND con_org_shortname IS NOT NULL
                       AND TRIM(con_org_shortname) != ''
@@ -30,7 +30,7 @@ def build_allowed_origin(subdomain: str) -> list[str]:
     """Build the allowed origin URLs for a given subdomain."""
     origins = []
     # Development origins
-    origins.append(f"http://{subdomain}.localhost:3000")
+    origins.append(f"http://{subdomain}.localhost:3001")
     # Production origins
     origins.append(f"https://{subdomain}.vowerp.co.in")
     return origins
@@ -46,8 +46,8 @@ def is_origin_allowed(origin: str) -> bool:
 
     # Always allow plain localhost/127.0.0.1 (for dev tools, Postman, etc.)
     always_allowed = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
     ]
     if origin in always_allowed:
         return True
@@ -80,7 +80,7 @@ def is_origin_allowed(origin: str) -> bool:
                 result = session.execute(
                     text("""
                         SELECT COUNT(*) as cnt
-                        FROM vowconsole3.con_org_master
+                        FROM maindata.con_org_master
                         WHERE LOWER(TRIM(con_org_shortname)) = LOWER(TRIM(:subdomain))
                           AND active = 1
                         LIMIT 1
@@ -100,7 +100,7 @@ def is_origin_allowed(origin: str) -> bool:
 class DynamicCORSMiddleware(BaseHTTPMiddleware):
     """
     Custom CORS middleware that validates origins dynamically
-    against the con_org_master table in vowconsole3.
+    against the con_org_master table in maindata.
     """
 
     async def dispatch(self, request: Request, call_next):

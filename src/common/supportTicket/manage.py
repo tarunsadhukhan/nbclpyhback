@@ -1,7 +1,7 @@
 """VOW team (Control Desk) support-ticket management endpoints.
 
 Mounted under ``/api/supportTicket`` with the ``/manage/*`` sub-path. These are
-Control Desk routes: they use ``Session(default_engine)`` against ``vowconsole3``
+Control Desk routes: they use ``Session(default_engine)`` against ``maindata``
 and authenticate with ``verify_access_token`` (console token), matching the rest
 of ``src/common/ctrldskAdmin``.
 """

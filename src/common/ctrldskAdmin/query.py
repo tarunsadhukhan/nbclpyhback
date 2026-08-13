@@ -13,7 +13,7 @@ def get_portal_menu_details(search: str = None):
             cmm.con_module_name,
             CASE 
                 WHEN menu.menu_parent_id > 0 THEN (SELECT parent.menu_name 
-                                                  FROM vowconsole3.portal_menu_mst parent 
+                                                  FROM maindata.portal_menu_mst parent 
                                                   WHERE parent.menu_id = menu.menu_parent_id)
                 ELSE ''
             END AS parent_name,
@@ -21,8 +21,8 @@ def get_portal_menu_details(search: str = None):
             menu.menu_path,
             menu.menu_icon,
             menu.module_id
-        FROM vowconsole3.portal_menu_mst menu
-        LEFT JOIN vowconsole3.con_module_masters cmm ON menu.module_id = cmm.con_module_id 
+        FROM maindata.portal_menu_mst menu
+        LEFT JOIN maindata.con_module_masters cmm ON menu.module_id = cmm.con_module_id 
         WHERE cmm.active = 1
     """
 
@@ -44,7 +44,7 @@ def portal_parentmenudetails():
                 menu.menu_id,
                 menu.menu_name,
                 menu.module_id
-            FROM vowconsole3.portal_menu_mst menu
+            FROM maindata.portal_menu_mst menu
             WHERE menu.menu_parent_id = 0 AND menu.active = 1"""
     sql += " ORDER BY module_id, menu.order_by"""
     #print(f"SQL Query: {sql}{moduleId}")
@@ -60,7 +60,7 @@ def portalmodulename():
     sql="""SELECT 
                 menu.con_module_id,
                 menu.con_module_name
-                FROM vowconsole3.con_module_masters menu
+                FROM maindata.con_module_masters menu
                 where  menu.active = 1
                 order by menu.con_module_name            
 """
@@ -71,7 +71,7 @@ def portalmodulename():
 def portalmenutypedetails():
     print(f" query portalmenutypedetails called ")
     sql="""SELECT * 
-                FROM vowconsole3.menu_type_mst
+                FROM maindata.menu_type_mst
             
 """
     return text(sql)
@@ -80,12 +80,12 @@ def get_portalmenuname_by_name(name: str = None, menu_id: int = None):
     print(f" query get_portalmenuname_by_name called with name: {name} ")
     if menu_id == 0:
         sql = """SELECT count(*) as count 
-                FROM vowconsole3.portal_menu_mst menu
+                FROM maindata.portal_menu_mst menu
                 where menu.menu_name = :name            
         """
     else:
         sql = """SELECT count(*) as count 
-                FROM vowconsole3.portal_menu_mst menu
+                FROM maindata.portal_menu_mst menu
                 where menu.menu_name = :name and menu.menu_id != :menu_id            
         """
     return text(sql)
@@ -95,7 +95,7 @@ def get_portalmenuname_by_name(name: str = None, menu_id: int = None):
 def get_menu_by_id_query(co_id: int):
     sql = f"""select menu_id,menu_name,menu_path,active,menu_parent_id,menu_type_id,
     menu_icon,module_id,order_by
-    from vowconsole3.portal_menu_mst
+    from maindata.portal_menu_mst
     where menu_id = :co_id;"""
     query = text(sql)
     return query
@@ -109,7 +109,7 @@ def orgmodulename(search: str = None):
             com.con_org_name AS org_name,
             GROUP_CONCAT(cmm.con_module_name SEPARATOR '/') AS module_selected
             FROM 
-            vowconsole3.con_org_master com
+            maindata.con_org_master com
             LEFT JOIN JSON_TABLE(
             com.con_modules_selected,
             '$[*]' COLUMNS (

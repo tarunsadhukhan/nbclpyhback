@@ -3,11 +3,11 @@
 Used by the floating widget on the Portal (`/portal/*`) and Tenant Admin
 (`/admin/*`) dashboards to raise tickets, view one's own tickets, and reply.
 
-Both dashboards write to the central ``vowconsole3`` database, but they resolve
+Both dashboards write to the central ``maindata`` database, but they resolve
 the reporter's identity from different user tables:
 
 * Portal  -> ``{tenant_db}.user_mst`` (via ``get_tenant_db``)
-* Admin   -> ``vowconsole3.con_user_master``
+* Admin   -> ``maindata.con_user_master``
 """
 
 from typing import Optional

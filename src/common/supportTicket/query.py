@@ -1,4 +1,4 @@
-"""Raw SQL read queries for the support-ticket feature (vowconsole3)."""
+"""Raw SQL read queries for the support-ticket feature (maindata)."""
 
 from sqlalchemy.sql import text
 

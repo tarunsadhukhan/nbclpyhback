@@ -2,7 +2,7 @@
 
 Files are stored in S3 via the generic ``src.common.attachments.s3_client``
 (reused for its boto3 wrapper); metadata lives in ``support_ticket_attachment``
-in ``vowconsole3``. Used by both the reporter (report.py) and VOW (manage.py)
+in ``maindata``. Used by both the reporter (report.py) and VOW (manage.py)
 endpoints.
 """
 

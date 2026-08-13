@@ -97,7 +97,7 @@ def change_password(
     Works for both personas based on the token's `type` field:
       * type == "portal"  -> tenant DB `user_mst` (resolved from subdomain, same
         mechanism as login_user()).
-      * otherwise (console/admin) -> `vowconsole3.con_user_master` via the default
+      * otherwise (console/admin) -> `maindata.con_user_master` via the default
         engine, same mechanism as login_user_console().
     """
     try:
@@ -166,7 +166,7 @@ def change_password(
                 )
                 session.commit()
         else:
-            # Console / tenant-admin user lives in vowconsole3.con_user_master.
+            # Console / tenant-admin user lives in maindata.con_user_master.
             with Session(default_engine) as session:
                 row = session.execute(
                     text(
@@ -238,7 +238,7 @@ def get_valid_origins(request: Request):
             result = session.execute(
                 text("""
                     SELECT LOWER(TRIM(con_org_shortname)) as shortname
-                    FROM vowconsole3.con_org_master
+                    FROM maindata.con_org_master
                     WHERE active = 1
                       AND con_org_shortname IS NOT NULL
                       AND TRIM(con_org_shortname) != ''

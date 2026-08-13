@@ -49,7 +49,7 @@ def submit_contact_form(form: ContactFormSchema, db: Session = Depends(get_db)):
     print('form',form)
     try:
         query = """
-            INSERT INTO vowconsole3.con_org_master (con_org_name, con_org_address)
+            INSERT INTO maindata.con_org_master (con_org_name, con_org_address)
             VALUES ('abcd', 'uuuu')"""
 
         params = {

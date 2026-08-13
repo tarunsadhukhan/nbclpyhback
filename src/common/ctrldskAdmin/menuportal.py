@@ -303,7 +303,7 @@ def create_portalmenucreate_data(
 
 
             # Fetch the latest menu
-            menusql="""select * from vowconsole3.portal_menu_mst pmm order by pmm.menu_id desc limit 1"""
+            menusql="""select * from maindata.portal_menu_mst pmm order by pmm.menu_id desc limit 1"""
             menusql = text(menusql)
             with Session(default_engine) as session:
                 result = session.execute(menusql).fetchone()
@@ -317,7 +317,7 @@ def create_portalmenucreate_data(
             # Fetch all org shortnames with status = 3
             orgsql = """
                 select com.con_org_shortname  
-                from vowconsole3.con_org_master com 
+                from maindata.con_org_master com 
                 where com.con_org_master_status = 3 and com.con_org_shortname="sls"
             """
             print(f"Executing orgsql: {orgsql}")
@@ -336,7 +336,7 @@ def create_portalmenucreate_data(
                             menu_id, menu_name, menu_path, active, 
                             menu_parent_id, menu_type_id, menu_icon,
                             module_id,order_by
-                        from vowconsole3.portal_menu_mst 
+                        from maindata.portal_menu_mst 
                         where menu_id = {latest_menu_id}
                     """
                     print('menu insert',menuinssql)                     

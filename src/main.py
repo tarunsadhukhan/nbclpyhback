@@ -1,4 +1,13 @@
 import logging
+import sys
+
+# Windows consoles default to cp1252, which blows up on the emoji in our log
+# prints (UnicodeEncodeError -> 500). Force UTF-8 on the streams instead of
+# stripping emoji from every print site.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 from fastapi import FastAPI, Request
 from src.common.routers import router as common_router
 from src.authorization.routers import common_router as auth_router
@@ -181,7 +190,7 @@ app.include_router(co_branch_router, prefix="/api/companyAdmin", tags=["company-
 app.include_router(co_dept_subdept_router, prefix="/api/companyAdmin", tags=["company-admin-dept-subdept"])
 
 # Support-ticket (Zendesk-style) routes — raised from Portal/Tenant Admin,
-# managed by the VOW team from the Control Desk. All data lives in vowconsole3.
+# managed by the VOW team from the Control Desk. All data lives in maindata.
 app.include_router(support_ticket_report_router, prefix="/api/supportTicket", tags=["support-ticket"])
 app.include_router(support_ticket_manage_router, prefix="/api/supportTicket", tags=["support-ticket-manage"])
 app.include_router(item_router, prefix="/api/itemMaster", tags=["masters-items"])

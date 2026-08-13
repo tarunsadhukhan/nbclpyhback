@@ -1,4 +1,4 @@
-"""ORM models for the support-ticket tables (live in ``vowconsole3``).
+"""ORM models for the support-ticket tables (live in ``maindata``).
 
 The tables are created via ``dbqueries/migrations/create_support_ticket_tables.sql``;
 these models are the authoritative schema reference and are used for inserts.

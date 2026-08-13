@@ -87,7 +87,7 @@ def login_user_console(
             # Update refresh token in DB only
             try:
                 update_query = text("""
-                    UPDATE vowconsole3.con_user_master 
+                    UPDATE maindata.con_user_master 
                     SET refresh_token = :refresh_token 
                     WHERE con_user_login_email_id = :username
                 """)
