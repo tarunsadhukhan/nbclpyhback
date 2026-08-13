@@ -1,0 +1,36 @@
+services:
+  nbclerp-backend:
+    image: ghcr.io/tarunsadhukhan/nbclerp3be:latest
+    build:
+      context: .
+    container_name: nbclerp-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    # .env lives on the VPS at /opt/nbjcl/nbclerp3be/.env and is NOT in git.
+    # The app calls load_dotenv("env/database.env"), but those vars are already
+    # in the container environment from here, so os.getenv() finds them anyway.
+    env_file: .env
+    environment:
+      - TZ=Asia/Kolkata
+    networks:
+      - nbclerp
+
+  # Same image, different command. The bio-attendance pipeline must run in its
+  # own process (see src/scheduler_main.py) or it never fires.
+  nbclerp-scheduler:
+    image: ghcr.io/tarunsadhukhan/nbclerp3be:latest
+    container_name: nbclerp-scheduler
+    restart: unless-stopped
+    command: uvicorn src.scheduler_main:app --host 0.0.0.0 --port 48480
+    ports:
+      - "48480:48480"
+    env_file: .env
+    environment:
+      - TZ=Asia/Kolkata
+    networks:
+      - nbclerp
+
+networks:
+  nbclerp:
+    external: true

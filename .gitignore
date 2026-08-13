@@ -3,3 +3,4 @@ __pycache__/
 .env
 VOWERP3BE.egg-info/
 .venv
+env/*.env
