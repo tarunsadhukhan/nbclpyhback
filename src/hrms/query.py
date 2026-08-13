@@ -33,6 +33,9 @@ def get_employee_list(branch_ids=None):
             CONCAT(sd.sub_dept_desc, ' (', COALESCE(d.dept_desc, ''), ')') AS sub_dept_name,
             des.desig AS designation_name,
             b.branch_name,
+            cat.cata_desc AS category_name,
+            esi.esi_no,
+            pf.pf_uan_no,
             COALESCE(p.mobile_no, c.mobile_no) AS mobile_no
         FROM hrms_ed_personal_details p
         LEFT JOIN hrms_ed_official_details o ON o.eb_id = p.eb_id AND o.active = 1
@@ -40,6 +43,9 @@ def get_employee_list(branch_ids=None):
         LEFT JOIN dept_mst d ON d.dept_id = sd.dept_id
         LEFT JOIN designation_mst des ON des.designation_id = o.designation_id
         LEFT JOIN branch_mst b ON b.branch_id = o.branch_id
+        LEFT JOIN category_mst cat ON cat.cata_id = o.catagory_id
+        LEFT JOIN hrms_ed_esi esi ON esi.eb_id = p.eb_id AND esi.active = 1
+        LEFT JOIN hrms_ed_pf pf ON pf.eb_id = p.eb_id AND pf.active = 1
         LEFT JOIN hrms_ed_contact_details c ON c.eb_id = p.eb_id AND c.active = 1
         LEFT JOIN status_mst s ON s.status_id = p.status_id
         WHERE {branch_filter}
@@ -50,12 +56,13 @@ def get_employee_list(branch_ids=None):
           AND (:status_id IS NULL OR p.status_id = :status_id)
           AND (:sub_dept_id IS NULL OR o.sub_dept_id = :sub_dept_id)
           AND (:is_active IS NULL OR p.active = :is_active)
+          AND (:cata_id IS NULL OR o.catagory_id = :cata_id)
           AND (:f_emp_code IS NULL OR o.emp_code LIKE :f_emp_code)
           AND (:f_full_name IS NULL OR CONCAT(p.first_name, ' ', COALESCE(p.middle_name, ''), ' ', COALESCE(p.last_name, '')) LIKE :f_full_name)
           AND (:f_designation IS NULL OR des.desig LIKE :f_designation)
-          AND (:f_branch IS NULL OR b.branch_name LIKE :f_branch)
           AND (:f_mobile IS NULL OR COALESCE(p.mobile_no, c.mobile_no) LIKE :f_mobile)
-          AND (:f_email IS NULL OR p.email_id LIKE :f_email)
+          AND (:f_esi_no IS NULL OR esi.esi_no LIKE :f_esi_no)
+          AND (:f_uan_no IS NULL OR pf.pf_uan_no LIKE :f_uan_no)
         ORDER BY p.eb_id DESC
         LIMIT :page_size OFFSET :offset
     """)
@@ -71,7 +78,8 @@ def get_employee_list_count(branch_ids=None):
         FROM hrms_ed_personal_details p
         LEFT JOIN hrms_ed_official_details o ON o.eb_id = p.eb_id AND o.active = 1
         LEFT JOIN designation_mst des ON des.designation_id = o.designation_id
-        LEFT JOIN branch_mst b ON b.branch_id = o.branch_id
+        LEFT JOIN hrms_ed_esi esi ON esi.eb_id = p.eb_id AND esi.active = 1
+        LEFT JOIN hrms_ed_pf pf ON pf.eb_id = p.eb_id AND pf.active = 1
         LEFT JOIN hrms_ed_contact_details c ON c.eb_id = p.eb_id AND c.active = 1
         WHERE {branch_filter}
           AND (:search IS NULL OR p.first_name LIKE :search
@@ -81,12 +89,13 @@ def get_employee_list_count(branch_ids=None):
           AND (:status_id IS NULL OR p.status_id = :status_id)
           AND (:sub_dept_id IS NULL OR o.sub_dept_id = :sub_dept_id)
           AND (:is_active IS NULL OR p.active = :is_active)
+          AND (:cata_id IS NULL OR o.catagory_id = :cata_id)
           AND (:f_emp_code IS NULL OR o.emp_code LIKE :f_emp_code)
           AND (:f_full_name IS NULL OR CONCAT(p.first_name, ' ', COALESCE(p.middle_name, ''), ' ', COALESCE(p.last_name, '')) LIKE :f_full_name)
           AND (:f_designation IS NULL OR des.desig LIKE :f_designation)
-          AND (:f_branch IS NULL OR b.branch_name LIKE :f_branch)
           AND (:f_mobile IS NULL OR COALESCE(p.mobile_no, c.mobile_no) LIKE :f_mobile)
-          AND (:f_email IS NULL OR p.email_id LIKE :f_email)
+          AND (:f_esi_no IS NULL OR esi.esi_no LIKE :f_esi_no)
+          AND (:f_uan_no IS NULL OR pf.pf_uan_no LIKE :f_uan_no)
     """)
 
 
@@ -96,7 +105,7 @@ def get_employee_personal_by_id():
                p.date_of_birth, p.blood_group, p.mobile_no, p.email_id,
                p.marital_status, p.country_id, p.relegion_name, p.fixed_eb_id,
                p.father_spouse_name, p.passport_no, p.driving_licence_no,
-               p.pan_no, p.aadhar_no, p.branch_id, p.updated_by, p.updated_date_time,
+               p.pan_no, p.aadhar_no, p.voter_card_no, p.branch_id, p.updated_by, p.updated_date_time,
                p.active, p.status_id,
                CASE WHEN f.face_image IS NOT NULL THEN 1 ELSE 0 END AS has_photo
         FROM hrms_ed_personal_details p
@@ -172,17 +181,20 @@ def get_employee_resign_by_eb_id():
 
 
 def get_employee_create_setup():
-    """Fetches all dropdown master data needed for employee creation (except designations which depend on branch)."""
+    """Fetches all dropdown master data needed for employee creation (except designations which depend on branch).
+
+    :branch_id is a comma-separated branch id list (matches the portal sidebar's multi-branch selection).
+    """
     return text("""
         SELECT 'blood_groups' AS source, blood_group_id AS id, blood_group_name AS name FROM hrms_blood_group
         UNION ALL
-        SELECT 'sub_departments', sd.sub_dept_id, CONCAT(sd.sub_dept_desc, ' (', COALESCE(d.dept_desc, ''), ')') FROM sub_dept_mst sd LEFT JOIN dept_mst d ON d.dept_id = sd.dept_id WHERE (:branch_id IS NULL OR d.branch_id = :branch_id)
+        SELECT 'sub_departments', sd.sub_dept_id, CONCAT(sd.sub_dept_desc, ' (', COALESCE(d.dept_desc, ''), ')') FROM sub_dept_mst sd LEFT JOIN dept_mst d ON d.dept_id = sd.dept_id WHERE (:branch_id IS NULL OR FIND_IN_SET(d.branch_id, :branch_id))
         UNION ALL
         SELECT 'branches', branch_id, branch_name FROM branch_mst WHERE co_id = :co_id AND active = 1
         UNION ALL
-        SELECT 'categories', cata_id, cata_desc FROM category_mst WHERE (:branch_id IS NULL OR branch_id = :branch_id)
+        SELECT 'categories', cata_id, cata_desc FROM category_mst WHERE (:branch_id IS NULL OR FIND_IN_SET(branch_id, :branch_id))
         UNION ALL
-        SELECT 'contractors', cont_id, contractor_name FROM contractor_mst WHERE (:branch_id IS NULL OR branch_id = :branch_id)
+        SELECT 'contractors', cont_id, contractor_name FROM contractor_mst WHERE (:branch_id IS NULL OR FIND_IN_SET(branch_id, :branch_id))
     """)
 
 
@@ -214,7 +226,7 @@ def get_reporting_employees():
                o.emp_code
         FROM hrms_ed_personal_details p
         LEFT JOIN hrms_ed_official_details o ON o.eb_id = p.eb_id AND o.active = 1
-        WHERE p.branch_id = :branch_id AND p.active = 1 AND p.status_id != 6
+        WHERE FIND_IN_SET(p.branch_id, :branch_id) AND p.active = 1 AND p.status_id != 6
         ORDER BY p.first_name
     """)
 
@@ -227,7 +239,7 @@ def get_employee_by_emp_code():
                p.date_of_birth, p.blood_group, p.mobile_no, p.email_id,
                p.marital_status, p.country_id, p.relegion_name,
                p.father_spouse_name, p.passport_no, p.driving_licence_no,
-               p.pan_no, p.aadhar_no
+               p.pan_no, p.aadhar_no, p.voter_card_no
         FROM hrms_ed_official_details o
         JOIN hrms_ed_personal_details p ON p.eb_id = o.eb_id AND p.active = 1
         WHERE o.emp_code = :emp_code AND o.active = 1

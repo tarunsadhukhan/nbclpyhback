@@ -16,6 +16,7 @@ from src.authorization.utils import (
 )
 from src.common.portal.permission_cache import get_permissions, replace_permissions
 from src.common.portal.query import (
+    get_co_brnach_all,
     get_portal_user_menus,
     get_report_menu_tree,
     get_report_root_menu_id,
@@ -42,13 +43,6 @@ def _cookie_settings() -> Dict[str, str | bool | None]:
         "secure": env_value == "production",
         "samesite": "None" if env_value == "production" else "Lax",
     }
-
-
-def _is_sub_sub_menu(menu_parent_id: int | None, parent_lookup: Dict[int, int | None]) -> bool:
-    if menu_parent_id is None:
-        return False
-    parent_parent = parent_lookup.get(menu_parent_id)
-    return parent_parent is not None
 
 
 def _normalise_path(path: str | None) -> str:
@@ -100,6 +94,36 @@ def get_portal_token_payload(
             raise HTTPException(status_code=401, detail=f"Invalid token: {str(exc)}") from exc
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(exc)}") from exc
+
+
+@router.get("/portal_login_companies")
+def portal_login_companies(tenant_session: Session = Depends(get_tenant_db)):
+    """Company + branch list for the login screen, before any credentials exist.
+
+    Deliberately unauthenticated: the login form shows these pickers above the
+    username field, so there is no token yet. It returns ids and names only, and
+    the tenant is fixed by the request's subdomain.
+
+    The caller's pick is NOT authorisation. /portal_menu_items still decides
+    what the signed-in user may actually see, and the frontend rejects a login
+    whose chosen company/branch is not in that user's own list.
+    """
+    rows = tenant_session.execute(get_co_brnach_all()).mappings().all()
+
+    companies: Dict[int, dict] = {}
+    for row in rows:
+        co_id = row["co_id"]
+        if co_id is None:
+            continue
+        company = companies.setdefault(
+            co_id, {"co_id": co_id, "co_name": row["co_name"], "branches": []}
+        )
+        if row["branch_id"] is not None:
+            company["branches"].append(
+                {"branch_id": row["branch_id"], "branch_name": row["branch_name"]}
+            )
+
+    return {"data": list(companies.values())}
 
 
 @router.get("/portal_menu_items")
@@ -154,18 +178,9 @@ def compmenuitems(
         #print(f"Found menus {menu_rows} menu entries for user {user_id}")
         companies: Dict[int, Dict[str, Dict[int, Dict[str, Dict[int, dict]]]]] = {}
         permissions_map: Dict[str, int] = {}
-        parent_lookup = {
-            row.menu_id: row.menu_parent_id
-            for row in menu_rows
-            if row.menu_id is not None
-        }
 
         for row in menu_rows:
             menu_id = row.menu_id
-            if menu_id==724:
-                print("here 724")
-            if menu_id==723:
-                print("here 723")
             if menu_id is None:
                 continue
 
@@ -187,9 +202,8 @@ def compmenuitems(
                 if existing is None or access_type_id > existing:
                     permissions_map[normalised_path] = access_type_id
 
-            if _is_sub_sub_menu(menu_parent_id, parent_lookup):
-                continue
-
+            # Menus are emitted flat at every depth; the sidebar rebuilds the
+            # tree from menu_parent_id, so nesting is unlimited.
             company_entry = companies.setdefault(
                 co_id,
                 {
@@ -211,6 +225,8 @@ def compmenuitems(
                 "menu_name": row.menu_name,
                 "menu_path": menu_path,
                 "menu_parent_id": menu_parent_id,
+                # Material Symbols ligature name, rendered by the sidebar
+                "menu_icon": row.menu_icon,
                 "access_type_id": access_type_id,
             }
 

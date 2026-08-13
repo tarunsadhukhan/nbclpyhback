@@ -53,6 +53,7 @@ class HrmsEdPersonalDetails(Base):
 	driving_licence_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
 	pan_no: Mapped[str | None] = mapped_column(String(15), nullable=True)
 	aadhar_no: Mapped[str | None] = mapped_column(String(20), nullable=True)
+	voter_card_no: Mapped[str | None] = mapped_column(String(20), nullable=True)
 	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
 	updated_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
 	updated_date_time: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False, server_default=func.current_timestamp())
@@ -89,6 +90,8 @@ class HrmsEdBankDetails(Base):
 	is_verified: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 	bank_branch_name: Mapped[str] = mapped_column(String(300), nullable=False)
 	eb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+	payment_mode: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0=Cash 1=Cheque 2=NEFT 3=UPI
+	beneficiary_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 # tbl_hrms_ed_contact_details → hrms_ed_contact_details
 class HrmsEdContactDetails(Base):
@@ -138,6 +141,8 @@ class HrmsEdPf(Base):
 	pf_previous_no: Mapped[str] = mapped_column(String(50), nullable=False)
 	nominee_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 	relationship_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	pension_no: Mapped[str | None] = mapped_column(String(10), nullable=True)
+	pension_date: Mapped[Date | None] = mapped_column(Date, nullable=True)
 
 # tbl_hrms_ed_esi → hrms_ed_esi
 class HrmsEdEsi(Base):
@@ -149,6 +154,7 @@ class HrmsEdEsi(Base):
 	updated_by: Mapped[int] = mapped_column(Integer, nullable=False)
 	updated_date_time: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False, server_default=func.current_timestamp())
 	medical_policy_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+	esi_date: Mapped[Date | None] = mapped_column(Date, nullable=True)
 
 # tbl_hrms_ed_resign_details → hrms_ed_resign_details
 class HrmsEdResignDetails(Base):

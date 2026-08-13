@@ -67,6 +67,21 @@ def parse_branch_ids(raw_branch_ids):
     return out if out else None
 
 
+# dept_mst.Worker_staff values
+WORKER = 1
+STAFF = 2
+
+
+def _parse_int(raw, label: str):
+    """Return raw as an int, None if blank/missing. 400s on non-numeric input."""
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{label} must be a valid integer")
+
+
 def optional_auth(request: Request, response: Response, access_token: str = Cookie(None, alias="access_token")) -> dict:
     """Dev-toggle auth dependency.
     If BYPASS_AUTH=1 or ENV=development, return a dummy user dict. Otherwise delegate to the real auth helper.
@@ -274,12 +289,40 @@ def dept_master_create(
         if not branch_id or not dept_desc or not dept_code:
             raise HTTPException(status_code=400, detail="Branch ID, department code, and department name are required")
 
+        order_id = _parse_int(payload.get("order_id"), "Order")
+        if order_id is None:
+            raise HTTPException(status_code=400, detail="Order is required")
+
+        # Worker_staff: 1 = Worker, 2 = Staff
+        worker_staff = _parse_int(payload.get("worker_staff"), "Department For")
+        if worker_staff not in (WORKER, STAFF):
+            raise HTTPException(status_code=400, detail="Department For must be 1 (Worker) or 2 (Staff)")
+
+        user_id_int = int(user_id) if user_id and str(user_id).isdigit() else None
+
+        # Edit path: the department page posts here with dept_master_id to update.
+        dept_master_id = payload.get("dept_master_id")
+        if dept_master_id:
+            existing = db.query(DeptMst).filter(DeptMst.dept_id == int(dept_master_id)).first()
+            if not existing:
+                raise HTTPException(status_code=404, detail="Department not found")
+            existing.branch_id = branch_id
+            existing.dept_code = dept_code
+            existing.dept_desc = dept_desc
+            existing.order_id = order_id
+            existing.worker_staff = worker_staff
+            existing.updated_by = user_id_int
+            existing.updated_date_time = now_ist()
+            db.commit()
+            return {"message": "Department updated successfully", "dept_master_id": existing.dept_id}
+
         new_dept_master = DeptMst(
             branch_id=branch_id,
-            created_by=int(user_id) if user_id and str(user_id).isdigit() else None,
+            created_by=user_id_int,
             dept_desc=dept_desc,
             dept_code=dept_code,
-            order_id=1,
+            order_id=order_id,
+            worker_staff=worker_staff,
             created_date=now_ist()
         )
         print(f"New DeptMst object: {new_dept_master}", flush=True)
@@ -383,8 +426,25 @@ def subdept_master_create(
         if order_by_int < 0:
             raise HTTPException(status_code=400, detail="Order By (order_by) must be a non-negative integer")
 
+        user_id_int = int(user_id) if user_id and str(user_id).isdigit() else None
+
+        # Edit path: the subdepartment page posts here with subdept_master_id to update.
+        subdept_master_id = payload.get("subdept_master_id")
+        if subdept_master_id:
+            existing = db.query(SubDeptMst).filter(SubDeptMst.sub_dept_id == int(subdept_master_id)).first()
+            if not existing:
+                raise HTTPException(status_code=404, detail="Subdepartment not found")
+            existing.sub_dept_code = subdept_code
+            existing.sub_dept_desc = subdept_name
+            existing.dept_id = dept_id
+            existing.order_no = order_by_int
+            existing.updated_by = user_id_int
+            existing.updated_date_time = now_ist()
+            db.commit()
+            return {"message": "Subdepartment updated successfully", "subdept_master_id": existing.sub_dept_id}
+
         new_subdept_master = SubDeptMst(
-            updated_by=int(user_id) if user_id and str(user_id).isdigit() else None,
+            updated_by=user_id_int,
             sub_dept_code=subdept_code,
             sub_dept_desc=subdept_name,
             dept_id=dept_id,

@@ -226,8 +226,23 @@ class CategoryMst(Base):
     cata_code = Column(String(255), nullable=True)
     cata_desc = Column(String(255), nullable=True)
     branch_id = Column(Integer, nullable=True)
-    updated_by = Column(String(255), nullable=True)
+    updated_by = Column(Integer, nullable=True)
     updated_date_time = Column(TIMESTAMP, nullable=False, server_default=func.current_timestamp())
+    grade_id = Column(Integer, nullable=True)
+
+
+# =============================================================================
+# GRADE MASTER
+# =============================================================================
+class GradeTable(Base):
+    """Employee grade master. grade_type: 0 = Worker, 1 = Staff.
+    Legacy table name (grade_table, not *_mst); tenant-wide (no co_id/branch_id)."""
+    __tablename__ = "grade_table"
+
+    grade_id = Column(Integer, primary_key=True, autoincrement=True)
+    grade_code = Column(String(4), nullable=True)
+    grade_name = Column(String(100), nullable=True)
+    grade_type = Column(Integer, nullable=True, default=0, server_default="0")
 
 
 # =============================================================================

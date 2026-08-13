@@ -2,7 +2,7 @@
 Worker Category Master API endpoints.
 
 Provides CRUD operations for the category_mst table.
-Fields: cata_code (category code), cata_desc (category name), branch_id.
+Fields: cata_code (category code), cata_desc (category name), branch_id, grade_id.
 """
 
 from fastapi import Depends, Request, HTTPException, APIRouter, Response
@@ -45,6 +45,26 @@ def parse_branch_ids(raw):
     return out if out else None
 
 
+def assert_code_available(db, cata_code, branch_id, cata_id=None):
+    """cata_code is unique per branch, not tenant-wide (every branch has its own
+    'S'/'STAFF', 'RTD'/'RETIRED', etc.). `<=>` so rows with a NULL branch compare too."""
+    sql = """
+        SELECT COUNT(*) AS cnt FROM category_mst
+        WHERE cata_code = :cata_code AND branch_id <=> :branch_id
+    """
+    params = {"cata_code": cata_code, "branch_id": branch_id}
+    if cata_id is not None:
+        sql += " AND cata_id != :cata_id"
+        params["cata_id"] = cata_id
+
+    dup_result = db.execute(text(sql), params).fetchone()
+    if dup_result and dup_result.cnt > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Category with this code already exists for this branch",
+        )
+
+
 def get_category_list_query(branch_ids=None):
     branch_filter = ""
     if branch_ids:
@@ -56,11 +76,14 @@ def get_category_list_query(branch_ids=None):
             c.cata_code,
             c.cata_desc,
             c.branch_id,
+            c.grade_id,
             c.updated_by,
             c.updated_date_time,
-            b.branch_name
+            b.branch_name,
+            g.grade_name
         FROM category_mst c
         LEFT JOIN branch_mst b ON b.branch_id = c.branch_id
+        LEFT JOIN grade_table g ON g.grade_id = c.grade_id
         WHERE (:search IS NULL OR c.cata_code LIKE :search
                OR c.cata_desc LIKE :search)
         {branch_filter}
@@ -75,11 +98,14 @@ def get_category_by_id_query():
             c.cata_code,
             c.cata_desc,
             c.branch_id,
+            c.grade_id,
             c.updated_by,
             c.updated_date_time,
-            b.branch_name
+            b.branch_name,
+            g.grade_name
         FROM category_mst c
         LEFT JOIN branch_mst b ON b.branch_id = c.branch_id
+        LEFT JOIN grade_table g ON g.grade_id = c.grade_id
         WHERE c.cata_id = :cata_id
     """)
 
@@ -159,7 +185,7 @@ def category_create_setup(
     db: Session = Depends(get_tenant_db),
     token_data: dict = Depends(get_current_user_with_refresh),
 ):
-    """Get dropdown options needed for category creation (branches)."""
+    """Get dropdown options needed for category creation (branches, grades)."""
     try:
         co_id = request.query_params.get("co_id")
         if not co_id:
@@ -172,8 +198,16 @@ def category_create_setup(
         """)
         branches = db.execute(branch_query, {"co_id": int(co_id)}).fetchall()
 
+        # grade_table is tenant-wide (no co_id/branch_id scoping)
+        grade_query = text("""
+            SELECT grade_id, grade_code, grade_name FROM grade_table
+            ORDER BY grade_name
+        """)
+        grades = db.execute(grade_query).fetchall()
+
         return {
             "branches": [dict(r._mapping) for r in branches],
+            "grades": [dict(r._mapping) for r in grades],
         }
     except HTTPException:
         raise
@@ -200,28 +234,17 @@ def category_create(
         if not cata_desc:
             raise HTTPException(status_code=400, detail="Category name (cata_desc) is required")
 
-        # Check duplicate code
-        dup_query = text("""
-            SELECT COUNT(*) AS cnt FROM category_mst
-            WHERE cata_code = :cata_code
-        """)
-        dup_result = db.execute(dup_query, {
-            "cata_code": cata_code,
-        }).fetchone()
-
-        if dup_result and dup_result.cnt > 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Category with this code already exists",
-            )
+        branch_id = int(body["branch_id"]) if body.get("branch_id") else None
+        assert_code_available(db, cata_code, branch_id)
 
         user_id = token_data.get("user_id") if token_data else None
 
         new_cat = CategoryMst(
             cata_code=cata_code,
             cata_desc=cata_desc,
-            branch_id=int(body["branch_id"]) if body.get("branch_id") else None,
-            updated_by=str(user_id) if user_id else None,
+            branch_id=branch_id,
+            grade_id=int(body["grade_id"]) if body.get("grade_id") else None,
+            updated_by=int(user_id) if user_id else None,
             updated_date_time=datetime.now(),
         )
         db.add(new_cat)
@@ -266,28 +289,16 @@ def category_edit(
         if not existing:
             raise HTTPException(status_code=404, detail="Category not found")
 
-        # Check duplicate code (excluding current record)
-        dup_query = text("""
-            SELECT COUNT(*) AS cnt FROM category_mst
-            WHERE cata_code = :cata_code AND cata_id != :cata_id
-        """)
-        dup_result = db.execute(dup_query, {
-            "cata_code": cata_code,
-            "cata_id": cata_id,
-        }).fetchone()
-
-        if dup_result and dup_result.cnt > 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Category with this code already exists",
-            )
+        branch_id = int(body["branch_id"]) if body.get("branch_id") else existing.branch_id
+        assert_code_available(db, cata_code, branch_id, cata_id=cata_id)
 
         user_id = token_data.get("user_id") if token_data else None
 
         existing.cata_code = cata_code
         existing.cata_desc = cata_desc
-        existing.branch_id = int(body["branch_id"]) if body.get("branch_id") else existing.branch_id
-        existing.updated_by = str(user_id) if user_id else existing.updated_by
+        existing.branch_id = branch_id
+        existing.grade_id = int(body["grade_id"]) if body.get("grade_id") else None
+        existing.updated_by = int(user_id) if user_id else existing.updated_by
         existing.updated_date_time = datetime.now()
 
         db.commit()

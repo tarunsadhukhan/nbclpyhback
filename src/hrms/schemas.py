@@ -72,11 +72,14 @@ class PfDetailsPayload(BaseModel):
     nominee_name: Optional[str] = None
     relationship_name: Optional[str] = None
     pf_date_of_join: Optional[date] = None
+    pension_no: Optional[str] = None
+    pension_date: Optional[date] = None
 
 
 class EsiDetailsPayload(BaseModel):
     esi_no: Optional[str] = None
     medical_policy_no: Optional[str] = None
+    esi_date: Optional[date] = None
 
 
 class ExperienceDetailsPayload(BaseModel):

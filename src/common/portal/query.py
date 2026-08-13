@@ -130,7 +130,7 @@ def get_report_menu_tree():
 def get_portal_user_menus(user_id: int = None):
     sql = """
         select  urm.co_id ,cm.co_name , urm.branch_id,bm.branch_name ,  urm.role_id, rmm.menu_id, 
-        mm.menu_name, mm.menu_path, mm.menu_parent_id  , 
+        mm.menu_name, mm.menu_path, mm.menu_parent_id  , mm.menu_icon ,
         case when ccm.access_type =1 then 1 else rmm.access_type_id end as "access_type_id" 
         from user_role_map urm
         left join co_mst cm on cm.co_id= urm.co_id

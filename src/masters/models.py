@@ -135,6 +135,10 @@ class DeptMst(Base):
     dept_code = Column(String(30), nullable=True)
     order_id = Column(Integer, nullable=True)
     created_date = Column(DateTime, nullable=False, default=func.now())
+    updated_by = Column(Integer, nullable=True)
+    updated_date_time = Column(DateTime, nullable=True)
+    # 1 = Worker, 2 = Staff (DB column is `Worker_staff`)
+    worker_staff = Column("Worker_staff", Integer, nullable=True, default=1)
 
  #   def __repr__(self):
         # include branch_id and dept_code for easier debugging

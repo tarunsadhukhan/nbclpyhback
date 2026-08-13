@@ -58,6 +58,7 @@ from src.masters.yarnMaster import router as yarn_master_router
 from src.masters.batchPlanMaster import router as batch_plan_master_router
 from src.masters.designation import router as designation_router
 from src.masters.category import router as category_router
+from src.masters.grade import router as grade_router
 from src.masters.contractor import router as contractor_router
 from src.masters.bankDetails import router as bank_details_router
 from src.masters.itemBom import router as item_bom_router
@@ -212,6 +213,7 @@ app.include_router(yarn_master_router, prefix="/api/yarnMaster", tags=["masters-
 app.include_router(batch_plan_master_router, prefix="/api/batchPlanMaster", tags=["masters-batch-plan"])
 app.include_router(designation_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
 app.include_router(category_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
+app.include_router(grade_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
 app.include_router(contractor_router, prefix="/api/contractorMaster", tags=["masters-contractor"])
 app.include_router(bank_details_router, prefix="/api/bankDetailsMaster", tags=["masters-bank-details"])
 app.include_router(item_bom_router, prefix="/api/itemBomMaster", tags=["masters-item-bom"])
@@ -394,5 +396,5 @@ if __name__ == "__main__":
     # reload_dirs: without it StatReload polls the whole repo (incl. .venv)
     # 4x/second and pins a CPU core. Absolute — a relative "src" silently
     # watches nothing when started from another cwd (edits then never reload).
-    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True,
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8001, reload=True,
                 reload_dirs=[os.path.dirname(os.path.abspath(__file__))])

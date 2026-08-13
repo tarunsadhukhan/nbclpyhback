@@ -122,3 +122,36 @@ class TestSubDeptMasterCreate:
         }
         response = client.post("/api/deptMaster/subdept_master_create", json=payload)
         assert response.status_code == 201
+
+    def test_subdept_master_id_updates_instead_of_inserting(self):
+        """Edit path: posting subdept_master_id must update, not create a duplicate."""
+        existing = MagicMock(sub_dept_id=7)
+        self._mock_session.query.return_value.filter.return_value.first.return_value = existing
+        payload = {
+            "branch_id": 1,
+            "subdept_name": "Renamed",
+            "subdept_code": "NEW",
+            "dept_id": 4,
+            "order_by": 9,
+            "subdept_master_id": 7,
+        }
+        response = client.post("/api/deptMaster/subdept_master_create", json=payload)
+        assert response.status_code == 200
+        assert response.json()["message"] == "Subdepartment updated successfully"
+        self._mock_session.add.assert_not_called()
+        assert existing.sub_dept_code == "NEW"
+        assert existing.sub_dept_desc == "Renamed"
+        assert (existing.dept_id, existing.order_no) == (4, 9)
+
+    def test_unknown_subdept_master_id_returns_404(self):
+        self._mock_session.query.return_value.filter.return_value.first.return_value = None
+        payload = {
+            "branch_id": 1,
+            "subdept_name": "Renamed",
+            "subdept_code": "NEW",
+            "dept_id": 4,
+            "order_by": 9,
+            "subdept_master_id": 999,
+        }
+        response = client.post("/api/deptMaster/subdept_master_create", json=payload)
+        assert response.status_code == 404

@@ -102,6 +102,7 @@ def employee_list(
         search = f"%{search_raw}%" if search_raw else None
         status_id = request.query_params.get("status_id")
         sub_dept_id = request.query_params.get("sub_dept_id")
+        cata_id = request.query_params.get("cata_id")
         is_active_raw = request.query_params.get("is_active")
         try:
             is_active = int(is_active_raw) if is_active_raw is not None else None
@@ -118,12 +119,13 @@ def employee_list(
             "status_id": int(status_id) if status_id else None,
             "sub_dept_id": int(sub_dept_id) if sub_dept_id else None,
             "is_active": is_active,
+            "cata_id": int(cata_id) if cata_id else None,
             "f_emp_code": _like_param("f_emp_code"),
             "f_full_name": _like_param("f_full_name"),
             "f_designation": _like_param("f_designation"),
-            "f_branch": _like_param("f_branch"),
             "f_mobile": _like_param("f_mobile"),
-            "f_email": _like_param("f_email"),
+            "f_esi_no": _like_param("f_esi_no"),
+            "f_uan_no": _like_param("f_uan_no"),
             "page_size": page_size,
             "offset": (page - 1) * page_size,
         }
@@ -218,7 +220,8 @@ def employee_create_setup(
             raise HTTPException(status_code=400, detail="co_id is required")
         branch_id = request.query_params.get("branch_id")
 
-        rows = db.execute(get_employee_create_setup(), {"co_id": int(co_id), "branch_id": int(branch_id) if branch_id else None}).fetchall()
+        # branch_id may be a comma-separated list (portal sidebar allows multi-branch selection)
+        rows = db.execute(get_employee_create_setup(), {"co_id": int(co_id), "branch_id": branch_id or None}).fetchall()
 
         result: dict[str, list] = {
             "blood_groups": [],
@@ -235,7 +238,7 @@ def employee_create_setup(
 
         # Reporting employees — filtered by branch_id if provided, otherwise co_id fallback
         if branch_id:
-            emp_rows = db.execute(get_reporting_employees(), {"branch_id": int(branch_id)}).fetchall()
+            emp_rows = db.execute(get_reporting_employees(), {"branch_id": branch_id}).fetchall()
         else:
             emp_rows = []
         result["reporting_employees"] = [
@@ -418,6 +421,7 @@ def employee_create(
             driving_licence_no=body.get("driving_licence_no"),
             pan_no=body.get("pan_no"),
             aadhar_no=body.get("aadhar_no"),
+            voter_card_no=body.get("voter_card_no"),
             branch_id=int(branch_id),
             updated_by=user_id,
             status_id=21,  # Draft

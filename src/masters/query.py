@@ -422,6 +422,8 @@ def get_dept_master(co_id: int = None, branch_ids: list = None):
     dm.dept_id AS dept_master_id,
     dm.dept_code,
     dm.dept_desc AS dept_name,
+    dm.order_id,
+    dm.Worker_staff AS worker_staff,
     1 AS active,
     bm.branch_name AS branch_display,
     dm.branch_id
@@ -429,6 +431,7 @@ def get_dept_master(co_id: int = None, branch_ids: list = None):
   JOIN branch_mst bm ON dm.branch_id = bm.branch_id
   WHERE (:search IS NULL OR dm.dept_code LIKE :search OR dm.dept_desc LIKE :search)
     {branch_filter}
+  ORDER BY dm.order_id IS NULL, dm.order_id, dm.dept_desc
   """
   branch_filter = ""
 
@@ -518,6 +521,7 @@ def get_subdept_master(co_id: int = None, branch_ids: list = None):
   left join branch_mst bm on bm.branch_id =dm.branch_id
   WHERE (:search IS NULL OR dm.dept_code LIKE :search OR dm.dept_desc LIKE :search)
     {branch_filter}
+  ORDER BY sdm.order_no IS NULL, sdm.order_no, sdm.sub_dept_desc
   """
   branch_filter = ""
 
