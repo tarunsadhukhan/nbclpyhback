@@ -13,8 +13,9 @@ exist yet.
 Multi-tenant safe: get_db() resolves the database per request from X-Tenant /
 the Host subdomain, so the ledger is written in whichever tenant DB the request
 belongs to. The `sync_client_uuid` table therefore has to exist in each tenant
-database — until it does, the guard fails open (see _table_missing) and the API
-behaves exactly as it did before.
+database — until it does, the guard fails open (see _ledger_known_missing) and
+the API behaves exactly as it did before, re-probing periodically so a migration
+applied while the service is running takes effect without a restart.
 
 Ceiling: the ledger row is committed separately from the business INSERT, so a
 process kill in the microseconds between the two can still let a replay through.
@@ -32,9 +33,23 @@ from src.mobileapp.db import get_db
 # read-only in effect, or need to run on every call.
 _SKIP_PREFIXES = ('/login', '/sync/')
 
-# Tenants whose database has no sync_client_uuid table yet. Cached so a missing
-# migration costs one failed query per process, not one per request.
-_MISSING_LEDGER = set()
+# Tenants whose database has no sync_client_uuid table yet: {tenant: last_seen}.
+# Cached so a missing migration costs one failed query every RECHECK_SECS rather
+# than one per request — but NOT cached forever, because the documented rollout
+# is "deploy the code, migrate later", and a permanent cache would leave replay
+# protection off until someone restarted the service.
+_MISSING_LEDGER = {}
+_RECHECK_SECS = 600
+
+
+def _ledger_known_missing(tenant):
+    seen = _MISSING_LEDGER.get(tenant)
+    if seen is None:
+        return False
+    if (datetime.now() - seen).total_seconds() > _RECHECK_SECS:
+        _MISSING_LEDGER.pop(tenant, None)   # re-probe: it may have been migrated
+        return False
+    return True
 
 
 def _tenant_key():
@@ -87,7 +102,7 @@ def install_idempotency(app):
         if any(request.path.startswith(p) for p in _SKIP_PREFIXES):
             return None
         tenant = _tenant_key()
-        if tenant in _MISSING_LEDGER:
+        if _ledger_known_missing(tenant):
             return None
         uuid = _client_uuid()
         if not uuid:
@@ -107,11 +122,12 @@ def install_idempotency(app):
                 db.commit()
             except Exception as exc:
                 db.rollback()
-                # Table not migrated in this tenant → stand aside permanently.
+                # Table not migrated in this tenant → stand aside, re-probe later.
                 if '1146' in str(exc) or "doesn't exist" in str(exc).lower():
-                    _MISSING_LEDGER.add(tenant)
+                    _MISSING_LEDGER[tenant] = datetime.now()
                     print(f"WARN idempotency: sync_client_uuid missing for tenant "
-                          f"{tenant!r}; replay protection is OFF until migrated")
+                          f"{tenant!r}; replay protection OFF, re-probing in "
+                          f"{_RECHECK_SECS}s")
                     return None
                 # Duplicate key → this uuid was seen before. Replay the verdict.
                 cursor.execute(
