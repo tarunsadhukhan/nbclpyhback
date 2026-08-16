@@ -156,6 +156,18 @@ def get_employee(emp_code):
 # POST Register Face
 # ══════════════════════════════════════════════════════════════════
 
+def _has_mobile_embedding_columns(cursor):
+    """Has this tenant database had migration_offline_sync.sql applied?"""
+    try:
+        cursor.execute(
+            """SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'employee_face_mst'
+                 AND COLUMN_NAME = 'face_embedding_mobile'""")
+        return cursor.fetchone() is not None
+    except Exception:
+        return False
+
+
 @onboarding_bp.route('/onboarding/register-face', methods=['POST'])
 def register_face():
     """
@@ -257,8 +269,20 @@ def register_face():
                 'message': 'No face detected in the image. Please try again.'
             }), 400
 
-        # Insert new face record (store the SHRUNKEN base64, not the raw upload)
-        cursor.execute(Q.INSERT_FACE, (eb_id, face_embedding_json, shrunk_b64))
+        # Insert new face record (store the SHRUNKEN base64, not the raw upload).
+        # The device may also send the MobileFaceNet embedding it computed from
+        # the same photo, so a newly onboarded worker is matchable offline
+        # immediately instead of waiting for the next backfill run. Those columns
+        # only exist after migration_offline_sync.sql, hence the guarded insert.
+        embedding_mobile = data.get('embedding_mobile')
+        mobile_model_ver = data.get('mobile_model_ver')
+        if embedding_mobile and _has_mobile_embedding_columns(cursor):
+            cursor.execute(Q.INSERT_FACE_WITH_MOBILE,
+                           (eb_id, face_embedding_json, shrunk_b64,
+                            json.dumps(embedding_mobile),
+                            mobile_model_ver or 'mobilefacenet-v1'))
+        else:
+            cursor.execute(Q.INSERT_FACE, (eb_id, face_embedding_json, shrunk_b64))
         db.commit()
 
         new_face_count = face_count + 1

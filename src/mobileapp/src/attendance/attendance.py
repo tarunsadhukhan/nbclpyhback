@@ -250,6 +250,115 @@ def mark_attendance():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ── Offline replay support ───────────────────────────────────
+# Records queued by the Android app while it had no network arrive here later,
+# carrying the time they actually happened plus (for an on-device face match)
+# the capture, so the server can re-verify it with dlib. All of it is optional:
+# a live submit sends none of these fields and behaves exactly as before, and a
+# tenant database without migration_offline_sync.sql simply ignores the extras.
+
+def _offline_columns_present(cursor):
+    """Which offline columns exist on daily_attendance in THIS tenant DB."""
+    try:
+        cursor.execute(
+            """SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'daily_attendance'
+                 AND COLUMN_NAME IN ('client_uuid','entry_source_time','sync_received_time',
+                                     'clock_skew_secs','face_verify_status','match_confidence',
+                                     'needs_review','dup_of')""")
+        return {r[0] if not isinstance(r, dict) else r['COLUMN_NAME'] for r in cursor.fetchall()}
+    except Exception:
+        return set()
+
+
+def _offline_context(data, cursor, eb_id, att_date, att_type, shift_id):
+    """Everything the offline path needs, or a no-op context for a live submit."""
+    ctx = {
+        'queued': bool(data.get('offline_queued')),
+        'source': None,
+        'punch_time': None,
+        'dup_of': None,
+        'supersedes': None,
+        'face_verify_status': None,
+        'needs_review': 0,
+        'client_uuid': data.get('client_uuid'),
+        'clock_skew_secs': data.get('clock_skew_secs'),
+        'match_confidence': data.get('match_confidence'),
+        'entry_time': None,
+        'columns': set(),
+    }
+    if not ctx['queued']:
+        return ctx
+
+    from src.mobileapp.src.sync.routes import parse_client_time, reverify_offline_face, store_offline_photo
+
+    ctx['columns'] = _offline_columns_present(cursor)
+    ctx['entry_time'] = parse_client_time(data.get('entry_time'))
+    ctx['punch_time'] = ctx['entry_time'] or datetime.now()
+
+    # Cross-device duplicate rule: keep the EARLIEST entry_time for the same
+    # employee/date/spell/type, park the later one inactive.
+    if 'dup_of' in ctx['columns']:
+        cursor.execute(Q.FIND_DUPLICATE_ATTENDANCE, (eb_id, att_date, att_type, shift_id))
+        existing = cursor.fetchone()
+        if existing:
+            existing_time = existing['entry_time'] if isinstance(existing, dict) else existing[1]
+            existing_id = existing['daily_atten_id'] if isinstance(existing, dict) else existing[0]
+            if existing_time and existing_time <= ctx['punch_time']:
+                ctx['dup_of'] = existing_id          # ours is the later one
+            else:
+                ctx['supersedes'] = existing_id      # ours is earlier
+
+    # An on-device match is the weaker engine, so it is never final: re-run dlib
+    # on the capture and record the verdict for HR to review in the web ERP.
+    face_image_b64 = data.get('face_image_b64')
+    if data.get('matched_offline') and face_image_b64:
+        store_offline_photo(face_image_b64)
+        ctx['face_verify_status'] = reverify_offline_face(face_image_b64, eb_id)
+        if ctx['face_verify_status'] in ('MISMATCH', 'NO_FACE'):
+            ctx['needs_review'] = 1
+    return ctx
+
+
+def _apply_offline_columns(cursor, attendance_id, ctx):
+    """Write the offline bookkeeping onto the row we just inserted.
+
+    Done as an UPDATE rather than widening the INSERT so the column list stays
+    valid on a tenant that has not run the migration.
+    """
+    if not ctx['queued'] or not ctx['columns']:
+        return
+    values = {
+        'client_uuid': ctx['client_uuid'],
+        'entry_source_time': ctx['entry_time'],
+        'sync_received_time': datetime.now(),
+        'clock_skew_secs': ctx['clock_skew_secs'],
+        'face_verify_status': ctx['face_verify_status'],
+        'match_confidence': ctx['match_confidence'],
+        'needs_review': ctx['needs_review'],
+        'dup_of': ctx['dup_of'],
+    }
+    usable = [(c, v) for c, v in values.items() if c in ctx['columns']]
+    if not usable:
+        return
+    sets = ', '.join(f"{c} = %s" for c, _ in usable)
+    try:
+        cursor.execute(f"UPDATE daily_attendance SET {sets} WHERE daily_atten_id = %s",
+                       tuple(v for _, v in usable) + (attendance_id,))
+    except Exception as e:
+        print(f"⚠️  offline columns not written: {e}")
+
+
+def _supersede(cursor, older_id, winner_id):
+    """Retire a row our earlier offline punch beat."""
+    try:
+        cursor.execute(
+            "UPDATE daily_attendance SET is_active = 0, dup_of = %s, update_date_time = NOW() "
+            "WHERE daily_atten_id = %s", (winner_id, older_id))
+    except Exception as e:
+        print(f"⚠️  could not supersede duplicate {older_id}: {e}")
+
+
 # ── Manual attendance ────────────────────────────────────────
 @attendance_bp.route('/mark-attendance', methods=['POST'])
 
@@ -323,19 +432,45 @@ def mark_attendance_manual():
             cursor.close(); db.close()
             return jsonify({"status": "error", "message": conflict}), 400
 
-        cursor.execute(Q.INSERT_ATTENDANCE,
-                     (eb_id, att_date,
-                      att_source, att_type,
-                      'P', branch_id,
-                      shift_id, shift_hours, department_id, designation_id,
-                      working_hours, idle_hours, geo_location))
+        # ── Offline replay handling ──────────────────────────────
+        # Only records the app queued offline take this path. A live submit is
+        # unchanged: it still gets its timestamp from the server clock and skips
+        # the cross-device duplicate check, which some workflows rely on.
+        offline = _offline_context(data, cursor, eb_id, att_date, att_type, shift_id)
+        # attendance_source stays 'F'/'A' as today — reports filter on those two
+        # codes, so an offline punch must not invent a third. Its offline-ness is
+        # recorded in entry_source_time / face_verify_status instead.
+        offline['source'] = att_source
+
+        if offline['queued']:
+            cursor.execute(Q.INSERT_ATTENDANCE_AT,
+                         (eb_id, att_date,
+                          offline['source'], att_type,
+                          'P', 0 if offline['dup_of'] else 1, branch_id,
+                          shift_id, shift_hours, department_id, designation_id,
+                          working_hours, idle_hours, geo_location,
+                          offline['punch_time']))
+        else:
+            cursor.execute(Q.INSERT_ATTENDANCE,
+                         (eb_id, att_date,
+                          offline['source'], att_type,
+                          'P', branch_id,
+                          shift_id, shift_hours, department_id, designation_id,
+                          working_hours, idle_hours, geo_location))
 
         # Get the inserted attendance ID
         attendance_id = cursor.lastrowid
 
-        # Save machine data to daily_ebmc_attendance if machines are provided
+        _apply_offline_columns(cursor, attendance_id, offline)
+
+        # Our punch was the earlier one — retire the row that beat us here.
+        if offline['supersedes']:
+            _supersede(cursor, offline['supersedes'], attendance_id)
+
+        # Save machine data to daily_ebmc_attendance if machines are provided.
+        # Skipped for a duplicate: the winning row already carries them.
         machine_ids = data.get('machine_ids', [])
-        if machine_ids and isinstance(machine_ids, list):
+        if machine_ids and isinstance(machine_ids, list) and not offline['dup_of']:
             for machine_id in machine_ids:
                 cursor.execute(Q.INSERT_MACHINE_ATTENDANCE,
                              (attendance_id, eb_id, machine_id, shift_id, branch_id))
@@ -344,13 +479,22 @@ def mark_attendance_manual():
         cursor.close()
         db.close()
 
+        message = f"Attendance marked for {name} (Manual)"
+        if offline['dup_of']:
+            message = (f"{name} already marked from another device — "
+                       f"kept the earlier punch")
+
         return jsonify({
             "status":    "success",
+            "id":        attendance_id,
             "emp_code":  emp_code,
             "emp_name":  name,
             "status_id": "3",
-            "is_active": 1,
-            "message":   f"Attendance marked for {name} (Manual)"
+            "is_active": 0 if offline['dup_of'] else 1,
+            "duplicate_of": offline['dup_of'],
+            "face_verify_status": offline['face_verify_status'],
+            "needs_review": bool(offline['needs_review']),
+            "message":   message
         })
     except Exception as e:
         print(f"❌ Manual attendance error: {str(e)}")

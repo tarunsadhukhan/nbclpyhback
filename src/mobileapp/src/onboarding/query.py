@@ -42,3 +42,12 @@ INSERT_FACE = """
     INSERT INTO employee_face_mst (eb_id, face_embedding, active, photo_html, updated_by, updated_date_time)
     VALUES (%s, %s, 1, %s, 0, NOW())
 """
+
+# Same insert plus the device-computed MobileFaceNet embedding, so the new face
+# is matchable offline straight away. Only valid after migration_offline_sync.sql.
+INSERT_FACE_WITH_MOBILE = """
+    INSERT INTO employee_face_mst (eb_id, face_embedding, active, photo_html, updated_by,
+                                   updated_date_time, face_embedding_mobile,
+                                   mobile_model_ver, mobile_embed_updated)
+    VALUES (%s, %s, 1, %s, 0, NOW(), %s, %s, NOW())
+"""

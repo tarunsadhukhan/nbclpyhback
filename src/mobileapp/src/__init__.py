@@ -21,6 +21,7 @@ from src.mobileapp.src.leave.leave import leave_bp
 from src.mobileapp.src.doff.doff import doff_bp
 from src.mobileapp.src.drawing import drawing_bp
 from src.mobileapp.src.permissions import permissions_bp
+from src.mobileapp.src.sync import sync_bp, install_idempotency
 
 
 # Allow only safe identifiers as a database name (the leading Host label).
@@ -154,5 +155,12 @@ def create_app(config_object=None, enable_cors=True):
 	app.register_blueprint(doff_bp)
 	app.register_blueprint(drawing_bp)
 	app.register_blueprint(permissions_bp)
+
+	# Offline-first sync: /sync/* endpoints plus the app-wide client_uuid replay
+	# guard that makes every mobile POST safe to retry. Registered last so the
+	# guard wraps the blueprints above. Both no-op on a tenant database that has
+	# not had migration_offline_sync.sql applied.
+	app.register_blueprint(sync_bp)
+	install_idempotency(app)
 
 	return app
