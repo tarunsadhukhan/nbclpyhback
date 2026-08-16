@@ -4,3 +4,9 @@ __pycache__/
 VOWERP3BE.egg-info/
 .venv
 env/*.env
+
+# Offline-sync: MobileFaceNet weights (large external artifact) and the Part G
+# evaluation working data — enrolment photos are biometric, never commit.
+tools/offline_sync/models/
+gallery/
+probes/
