@@ -75,6 +75,35 @@ def _table_has(table, column):
         return False
 
 
+def _branch_face_totals(branch_id):
+    """How many faces this branch has enrolled, and how many are offline-ready.
+
+    Returns {'enrolled': n, 'with_mobile': n}. The two numbers separate three
+    situations that look identical to the device otherwise:
+      enrolled == 0                  → nobody has been onboarded yet
+      enrolled > 0, with_mobile == 0 → enrolled, but the backfill has not run
+      with_mobile > 0                → server-side ready; any gap is the download
+    """
+    try:
+        db = get_db()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT COUNT(*) AS enrolled,
+                   SUM(CASE WHEN f.face_embedding_mobile IS NOT NULL THEN 1 ELSE 0 END) AS with_mobile
+            FROM employee_face_mst f
+            INNER JOIN hrms_ed_official_details o ON f.eb_id = o.eb_id
+            INNER JOIN hrms_ed_personal_details p ON f.eb_id = p.eb_id
+            WHERE f.active = 1 AND p.active = 1 AND o.branch_id = %s
+        """, (branch_id,))
+        row = cursor.fetchone() or {}
+        cursor.close()
+        db.close()
+        return {'enrolled': int(row.get('enrolled') or 0),
+                'with_mobile': int(row.get('with_mobile') or 0)}
+    except Exception:
+        return {'enrolled': -1, 'with_mobile': -1}   # -1 = unknown, app stays quiet
+
+
 def _load_config():
     """Client config from sync_client_config, falling back to the defaults."""
     cfg = dict(_DEFAULT_CONFIG)
@@ -157,12 +186,19 @@ def sync_face_embeddings():
                 'model_ver': MOBILE_MODEL_VER,
                 'rows': [], 'deleted': [], 'count': 0,
                 'has_more': False, 'next_offset': 0,
+                'total_enrolled': -1, 'total_with_mobile': -1,
                 'message': 'Mobile embeddings not migrated on this database yet',
             })
 
         since = request.args.get('since')
         offset = request.args.get('offset', default=0, type=int)
         limit = min(request.args.get('limit', default=200, type=int), 500)
+
+        # Branch totals, independent of `since`/paging. Without these the device
+        # cannot tell "nothing new since last pull" from "nothing enrolled at
+        # all" — and those need opposite actions from different people, so the
+        # app was telling operators to download data that does not exist.
+        totals = _branch_face_totals(branch_id)
 
         where = ["f.active = 1", "p.active = 1", "f.face_embedding_mobile IS NOT NULL",
                  "o.branch_id = %s"]
@@ -233,6 +269,8 @@ def sync_face_embeddings():
             'count': len(out),
             'has_more': has_more,
             'next_offset': offset + len(out),
+            'total_enrolled': totals['enrolled'],
+            'total_with_mobile': totals['with_mobile'],
         })
     except Exception as e:
         print(f"❌ sync/face-embeddings error: {e}")
