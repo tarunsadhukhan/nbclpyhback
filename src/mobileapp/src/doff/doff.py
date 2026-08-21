@@ -705,8 +705,8 @@ def get_spg1_mech_codes():
 # -- GET /doff/spg1-summary ---------------------------------------------------
 @doff_bp.route('/doff/spg1-summary', methods=['GET'])
 def get_spg1_summary():
-    """Return per-machine summary for SPG1 doff entries.
-    Groups daily_doff_tbl rows (weight_type='SPG1') by machine for the given
+    """Return per-machine summary for spinning doff entries.
+    Groups daily_doff_tbl rows (weight_type 'SPG1' manual / 'Auto' scale) by machine for the given
     date/spell/branch. Returns mech_posting_code, individual net weights,
     count and total.
     Query params: date (YYYY-MM-DD), spell_id (int), branch_id (int).
@@ -732,7 +732,7 @@ def get_spg1_summary():
             WHERE dt.doff_date  = %s
               AND dt.spell      = %s
               AND dt.branch_id  = %s
-              AND dt.weight_type = 'SPG1'
+              AND dt.weight_type IN ('SPG1', 'Auto')
               AND (dt.active IS NULL OR dt.active = 1)
             ORDER BY m.mech_posting_code, dt.daily_doff_tbl_id
         """

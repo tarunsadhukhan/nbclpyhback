@@ -44,6 +44,36 @@ GET_LAST_WORKED_MACHINES = """
     WHERE daily_atten_id = %s AND is_active = 1
 """
 
+# Bulk form of the two queries above: the latest attendance row per employee
+# for a whole branch, machines GROUP_CONCATed. Two-level groupwise-max (latest
+# date first, then highest id on that date) so a backdated entry with a higher
+# id does not beat a newer date — same order as GET_LAST_WORKED_BY_EB.
+GET_LAST_ENTRIES_BY_BRANCH = """
+    SELECT o.emp_code,
+           da.worked_department_id,
+           da.worked_designation_id,
+           GROUP_CONCAT(em.mc_id) AS machine_ids
+    FROM (
+        SELECT t.eb_id, MAX(t.daily_atten_id) AS daily_atten_id
+        FROM daily_attendance t
+        JOIN (
+            SELECT eb_id, MAX(attendance_date) AS last_date
+            FROM daily_attendance
+            WHERE branch_id = %s AND (is_active IS NULL OR is_active = 1)
+            GROUP BY eb_id
+        ) ld ON ld.eb_id = t.eb_id AND ld.last_date = t.attendance_date
+        WHERE t.branch_id = %s AND (t.is_active IS NULL OR t.is_active = 1)
+        GROUP BY t.eb_id
+    ) latest
+    JOIN daily_attendance da ON da.daily_atten_id = latest.daily_atten_id
+    JOIN hrms_ed_official_details o
+         ON o.eb_id = latest.eb_id AND o.branch_id = da.branch_id
+    LEFT JOIN daily_ebmc_attendance em
+           ON em.daily_atten_id = da.daily_atten_id AND em.is_active = 1
+    GROUP BY o.emp_code, da.daily_atten_id,
+             da.worked_department_id, da.worked_designation_id
+"""
+
 GET_ALL_EMPLOYEES = """
     SELECT p.eb_id,
            o.emp_code,

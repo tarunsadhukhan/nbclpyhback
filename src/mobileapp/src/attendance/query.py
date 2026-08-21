@@ -8,6 +8,34 @@ INSERT_ATTENDANCE = """
        entry_time, update_date_time)
     VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s, '3', %s, %s, %s, NOW(), NOW())
 """
+
+# Same insert, but the punch time comes from the device instead of NOW().
+# Used ONLY for records replayed from the app's offline outbox: without it every
+# offline punch would be stamped with its upload time, not the time it happened.
+# is_active is a parameter too, so a record that loses the cross-device duplicate
+# race can be kept inactive for audit rather than dropped.
+INSERT_ATTENDANCE_AT = """
+    INSERT INTO daily_attendance
+      (eb_id, attendance_date,
+       attendance_source, attendance_type,
+       attendance_mark, is_active, branch_id,
+       spell_id, spell_hours, worked_department_id, worked_designation_id,
+       status_id, working_hours, idle_hours, geo_location,
+       entry_time, update_date_time)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '3', %s, %s, %s, %s, NOW())
+"""
+
+# Cross-device duplicate check, offline replays only: two devices at the same
+# gate cannot see each other's punches while offline. attendance_type is part of
+# the key on purpose — an OT/Cash mark on the same spell is a legitimate second
+# row, not a duplicate.
+FIND_DUPLICATE_ATTENDANCE = """
+    SELECT daily_atten_id, entry_time FROM daily_attendance
+    WHERE eb_id = %s AND attendance_date = %s AND attendance_type = %s
+      AND is_active = 1 AND (spell_id <=> %s)
+    ORDER BY entry_time LIMIT 1
+"""
+
 INSERT_MACHINE_ATTENDANCE = """
     INSERT INTO daily_ebmc_attendance
       (daily_atten_id, eb_id, mc_id,

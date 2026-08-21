@@ -11,6 +11,7 @@ from flask import Blueprint, request, jsonify
 from src.mobileapp.db import get_db
 from src.mobileapp.src.utils import decode_image
 from src.mobileapp.src.employees import query as Q
+from src.mobileapp.src.onboarding import query as OQ
 from src.mobileapp.src.schemas.employee import RegisterEmployeeSchema, UpdateFaceSchema
 
 employees_bp = Blueprint('employees', __name__)
@@ -29,9 +30,14 @@ def _require_face_recognition():
 @employees_bp.route('/employees', methods=['GET'])
 def get_employees():
     try:
+        # ?joined=1 -> only JOINED (status 35) employees: the attendance screen and the
+        # device's offline directory use this so they never offer someone /employee/<code>
+        # will refuse. Without it (employee master) everyone active is listed.
+        joined_only = request.args.get('joined') in ('1', 'true', 'yes')
         db     = get_db()
         cursor = db.cursor(dictionary=True)
-        cursor.execute(Q.GET_ALL_EMPLOYEES)
+        cursor.execute(Q.GET_ALL_EMPLOYEES.replace(
+            "WHERE p.active = 1", "WHERE p.active = 1 AND p.status_id = 35" if joined_only else "WHERE p.active = 1"))
         rows = cursor.fetchall()
         cursor.close()
         db.close()
@@ -44,6 +50,33 @@ def get_employees():
             r.pop('photo_html', None)
 
         return jsonify({"status": "success", "total": len(rows), "data": rows})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ── GET last entry (dept/designation/machines) for every employee ───────────
+# Bulk form of the per-employee lookup below, so the mobile app can pre-fill
+# designation + machine numbers OFFLINE for employees the device never saw.
+@employees_bp.route('/employees/last-entries', methods=['GET'])
+def get_last_entries():
+    try:
+        branch_id = request.args.get('branch_id', type=int)
+        if not branch_id:
+            return jsonify({"status": "error", "message": "branch_id is required"}), 400
+        db     = get_db()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(Q.GET_LAST_ENTRIES_BY_BRANCH, (branch_id, branch_id))
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+        data = [{
+            "emp_code":       r['emp_code'],
+            "dept_id":        r['worked_department_id'],
+            "designation_id": r['worked_designation_id'],
+            "machine_ids":    [int(m) for m in r['machine_ids'].split(',')]
+                              if r['machine_ids'] else []
+        } for r in rows]
+        return jsonify({"status": "success", "total": len(data), "data": data})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -67,8 +100,17 @@ def get_employee_by_code(emp_code):
         #print(f"[employees.get_employee_by_code] ROW: {_row_log}")
 
         if not employee:
+            # Exists but not JOINED (status 35)? Say so — the device may have just
+            # recognised this face, and "not found" sends the operator the wrong way.
+            cursor.execute(OQ.GET_EMPLOYEE_STATUS_ANY, (emp_code, branch_id, branch_id))
+            other = cursor.fetchone()
             cursor.close()
             db.close()
+            if other:
+                return jsonify({"status": "error", "message":
+                    f"Employee {emp_code} ({other['name']}) is in HR status "
+                    f"{other['status_name'] or 'UNKNOWN'} - not eligible for attendance. "
+                    f"Update the employee's status to JOINED in HR first."}), 403
             return jsonify({"status": "error", "message": "Employee not found"}), 404
 
         # Last-worked department/designation + machines (most recent attendance)

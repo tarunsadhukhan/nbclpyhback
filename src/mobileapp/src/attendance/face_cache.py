@@ -17,10 +17,11 @@ hook point.
 
 import json
 import threading
+import time
 
 import numpy as np
 
-from src.mobileapp.db import get_db
+from src.mobileapp.db import DB_CONFIG, current_db_name, get_db
 
 
 # Bulk fetch *without* photo_html -- keeps the cache small.
@@ -55,7 +56,19 @@ _PHOTO_SQL = """
 
 
 _lock = threading.Lock()
-_cache = {"encs": None, "meta": None}
+
+# Keyed by (db_name, branch_id) -> (encs, meta, loaded_at).  db_name is part of
+# the key because the database is resolved per-request from the Host subdomain
+# (see src/mobileapp/db.py) -- a single global slot would serve one tenant's
+# faces to another.  That is why the original cache was left switched off.
+_cache = {}
+
+# Re-read from DB after this many seconds even without an explicit invalidate().
+# register_face() invalidates immediately, so this only covers changes made
+# outside that path (employee deactivated, branch transfer, direct SQL).
+# ponytail: fixed TTL, not a change-feed -- 60 s of staleness is cheaper than
+# wiring invalidation into every table that can affect the roster.
+_TTL_SECONDS = 60
 
 
 def _load(branch_id=None):
@@ -104,32 +117,38 @@ def _load(branch_id=None):
     return stacked, meta
 
 
-def get():
-    """Return (encs_ndarray, meta_list).  Loads from DB on first call /
-    after invalidate().  Thread-safe."""
-    with _lock:
-        if _cache["encs"] is None:
-            _cache["encs"], _cache["meta"] = _load()
-            print(f"[face_cache] loaded {_cache['encs'].shape[0]} embeddings")
-        return _cache["encs"], _cache["meta"]
-
-
 def load(branch_id=None):
-    """Return (encs_ndarray, meta_list) loaded fresh from the *current* request's
-    database, bypassing the cross-request cache.  Used by the face-match
-    endpoints so matching always runs against the live tenant DB -- the same
-    process as the reference backend (no stale / cross-tenant data).  When
-    ``branch_id`` is given, only that branch's employees are considered."""
-    encs, meta = _load(branch_id)
-    print(f"[face_cache] live-loaded {encs.shape[0]} embeddings (branch_id={branch_id})")
+    """Return (encs_ndarray, meta_list) for the current request's tenant DB,
+    scoped to ``branch_id`` when given.
+
+    Served from memory when a fresh entry exists.  The DB round-trip this
+    replaces costs 1-3 s per call -- it ran on *every* /check-face and
+    /attendance request, which is the single biggest slice of a punch."""
+    key = (current_db_name(DB_CONFIG["database"]), branch_id)
+    now = time.monotonic()
+
+    # ponytail: the load happens under the lock, so N simultaneous punches on a
+    # cold cache do one DB read between them instead of N.  It also means a slow
+    # DB blocks other branches' punches for that one read -- acceptable while
+    # the read is ~1-3 s and happens once a minute; split to a per-key lock if
+    # that ever shows up in the latency numbers.
+    with _lock:
+        hit = _cache.get(key)
+        if hit is not None and now - hit[2] < _TTL_SECONDS:
+            return hit[0], hit[1]
+
+        encs, meta = _load(branch_id)
+        _cache[key] = (encs, meta, now)
+
+    print(f"[face_cache] loaded {encs.shape[0]} embeddings "
+          f"(db={key[0]}, branch_id={branch_id})")
     return encs, meta
 
 
 def invalidate():
-    """Drop the cache so the next get() reloads from DB."""
+    """Drop every cached entry so the next load() re-reads from DB."""
     with _lock:
-        _cache["encs"] = None
-        _cache["meta"] = None
+        _cache.clear()
     print("[face_cache] invalidated")
 
 
@@ -143,3 +162,43 @@ def get_photo_html(eb_id):
     cursor.close()
     db.close()
     return row["photo_html"] if row else None
+
+
+if __name__ == "__main__":
+    # Self-check: python -m src.mobileapp.src.attendance.face_cache
+    # Fakes the DB read and the clock so the caching rules are checked without
+    # a database.  Fails loudly if the cache ever serves the wrong tenant.
+    import sys
+
+    calls = []
+
+    def _fake_load(branch_id=None):
+        calls.append((_db_name, branch_id))
+        return np.zeros((len(calls), 128)), [{"eb_id": len(calls)}]
+
+    _db_name = "sls"
+    _now = [1000.0]
+    _load, time.monotonic = _fake_load, lambda: _now[0]
+    current_db_name = lambda default: _db_name
+
+    load(5); load(5)
+    assert len(calls) == 1, f"second call should hit cache, got {calls}"
+
+    load(7)
+    assert len(calls) == 2, "a different branch must not reuse branch 5's faces"
+
+    _db_name = "other_tenant"
+    load(5)
+    assert calls[-1] == ("other_tenant", 5), "tenant must not be served cached faces"
+
+    _db_name = "sls"
+    _now[0] += _TTL_SECONDS + 1
+    load(5)
+    assert len(calls) == 4, "entry older than the TTL must be re-read"
+
+    _now[0] += 1
+    invalidate()
+    load(5)
+    assert len(calls) == 5, "invalidate() must force a re-read"
+
+    print("face_cache self-check OK", file=sys.stderr)

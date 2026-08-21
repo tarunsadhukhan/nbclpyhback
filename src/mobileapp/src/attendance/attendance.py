@@ -1,4 +1,5 @@
 import json
+import os
 import re
 try:
     import face_recognition
@@ -37,6 +38,49 @@ attendance_bp = Blueprint('attendance', __name__)
 # different-person collision and unregistered faces are rejected.
 MATCH_THRESHOLD = 0.46
 MATCH_MARGIN    = 0.08
+
+
+# ── Live-face detection scale ────────────────────────────────
+# face_recognition.face_encodings() detects at number_of_times_to_upsample=1,
+# which doubles the image before the HOG scan — a 540x720 phone selfie (what
+# FaceValidateActivity.kt actually uploads) gets scanned at 1080x1440. Measured:
+# ~465 ms at upsample=1 vs ~99 ms at upsample=0, and detection is the dominant
+# cost of a punch. The face already fills a selfie; upsampling finds nothing
+# extra.
+#
+# The risk this carries: a different detection scale shifts the box, which
+# shifts the alignment, which shifts the 128-d embedding — and MATCH_THRESHOLD
+# below has almost no room (worst same-person 0.437, closest different-person
+# 0.490). scripts/validate_face_upsample.py measures that shift against the
+# real enrolled set, and scripts/backfill_face_upsample.py re-encodes the
+# stored side if validation says it is needed.
+#
+# Defaults to 1 — the OLD, slow, known-good scale. The fast path is deliberately
+# off until scripts/validate_face_upsample.py has been run against the enrolled
+# set: shipping an unvalidated change to face matching means workers who cannot
+# clock in, which is worse than a slow punch. Once validation passes, set
+# FACE_UPSAMPLE=0 in the container env to switch it on — no code change.
+FACE_UPSAMPLE = int(os.getenv("FACE_UPSAMPLE", "1"))
+
+
+def _encode_live_face(img_rgb):
+    """Live 128-d encodings for img_rgb, detecting at FACE_UPSAMPLE.
+
+    Falls back to upsample=1 when the faster scale finds nothing, so this can
+    only ever detect *more* faces than the old code, never fewer — a worker
+    whose face needs the slower scan still gets in instead of hitting
+    "No face detected". Those fallback punches are encoded at a different scale
+    than the stored embeddings; MATCH_THRESHOLD and MATCH_MARGIN are what stop a
+    drifted embedding from landing on the wrong person."""
+    locs = face_recognition.face_locations(
+        img_rgb, number_of_times_to_upsample=FACE_UPSAMPLE)
+    if not locs and FACE_UPSAMPLE != 1:
+        locs = face_recognition.face_locations(img_rgb, number_of_times_to_upsample=1)
+    if not locs:
+        return []
+    # Only the first detection is ever used by the callers below, so encode one
+    # face rather than every face that happens to be in frame.
+    return face_recognition.face_encodings(img_rgb, known_face_locations=locs[:1])
 
 
 def _match_face(stored_encs, employees, live_enc):
@@ -123,6 +167,23 @@ def _spell_hours_conflict(cursor, eb_id, att_date, spell_id, spell_cap,
     return None
 
 
+def _photo_b64(photo_html):
+    """Base64 payload out of a stored photo_html, or None.
+
+    The column holds either an HTML wrapper —
+    <img src="data:image/jpeg;base64,XXXX" /> — or a bare base64 string, and in
+    this database most rows are the bare form. A regex-only read returns None
+    for those, which is why /attendance-photo answered 'success' with a null
+    photo."""
+    if not photo_html:
+        return None
+    match = re.search(r'base64,([^"]+)', photo_html)
+    if match:
+        return match.group(1).strip() or None
+    stripped = photo_html.strip()
+    return stripped if stripped and '<' not in stripped else None
+
+
 def _require_face_recognition():
     if face_recognition is None:
         return jsonify({
@@ -146,7 +207,7 @@ def mark_attendance():
             return jsonify({"status": "error", "message": errors[0]}), 400
 
         img_rgb        = decode_image(data['image'])
-        live_encodings = face_recognition.face_encodings(img_rgb)
+        live_encodings = _encode_live_face(img_rgb)
         att_type       = data.get('attendance_type') or data.get('att_type', 'R')
 
         print(f"📥 Attendance POST data: {  {k: (v[:50] + '...') if k == 'image' and isinstance(v, str) and len(v) > 50 else v for k, v in data.items()}  }")
@@ -250,6 +311,115 @@ def mark_attendance():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ── Offline replay support ───────────────────────────────────
+# Records queued by the Android app while it had no network arrive here later,
+# carrying the time they actually happened plus (for an on-device face match)
+# the capture, so the server can re-verify it with dlib. All of it is optional:
+# a live submit sends none of these fields and behaves exactly as before, and a
+# tenant database without offline_sync.sql simply ignores the extras.
+
+def _offline_columns_present(cursor):
+    """Which offline columns exist on daily_attendance in THIS tenant DB."""
+    try:
+        cursor.execute(
+            """SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'daily_attendance'
+                 AND COLUMN_NAME IN ('client_uuid','entry_source_time','sync_received_time',
+                                     'clock_skew_secs','face_verify_status','match_confidence',
+                                     'needs_review','dup_of')""")
+        return {r[0] if not isinstance(r, dict) else r['COLUMN_NAME'] for r in cursor.fetchall()}
+    except Exception:
+        return set()
+
+
+def _offline_context(data, cursor, eb_id, att_date, att_type, shift_id):
+    """Everything the offline path needs, or a no-op context for a live submit."""
+    ctx = {
+        'queued': bool(data.get('offline_queued')),
+        'source': None,
+        'punch_time': None,
+        'dup_of': None,
+        'supersedes': None,
+        'face_verify_status': None,
+        'needs_review': 0,
+        'client_uuid': data.get('client_uuid'),
+        'clock_skew_secs': data.get('clock_skew_secs'),
+        'match_confidence': data.get('match_confidence'),
+        'entry_time': None,
+        'columns': set(),
+    }
+    if not ctx['queued']:
+        return ctx
+
+    from src.mobileapp.src.sync.routes import parse_client_time, reverify_offline_face, store_offline_photo
+
+    ctx['columns'] = _offline_columns_present(cursor)
+    ctx['entry_time'] = parse_client_time(data.get('entry_time'))
+    ctx['punch_time'] = ctx['entry_time'] or datetime.now()
+
+    # Cross-device duplicate rule: keep the EARLIEST entry_time for the same
+    # employee/date/spell/type, park the later one inactive.
+    if 'dup_of' in ctx['columns']:
+        cursor.execute(Q.FIND_DUPLICATE_ATTENDANCE, (eb_id, att_date, att_type, shift_id))
+        existing = cursor.fetchone()
+        if existing:
+            existing_time = existing['entry_time'] if isinstance(existing, dict) else existing[1]
+            existing_id = existing['daily_atten_id'] if isinstance(existing, dict) else existing[0]
+            if existing_time and existing_time <= ctx['punch_time']:
+                ctx['dup_of'] = existing_id          # ours is the later one
+            else:
+                ctx['supersedes'] = existing_id      # ours is earlier
+
+    # An on-device match is the weaker engine, so it is never final: re-run dlib
+    # on the capture and record the verdict for HR to review in the web ERP.
+    face_image_b64 = data.get('face_image_b64')
+    if data.get('matched_offline') and face_image_b64:
+        store_offline_photo(face_image_b64)
+        ctx['face_verify_status'] = reverify_offline_face(face_image_b64, eb_id)
+        if ctx['face_verify_status'] in ('MISMATCH', 'NO_FACE'):
+            ctx['needs_review'] = 1
+    return ctx
+
+
+def _apply_offline_columns(cursor, attendance_id, ctx):
+    """Write the offline bookkeeping onto the row we just inserted.
+
+    Done as an UPDATE rather than widening the INSERT so the column list stays
+    valid on a tenant that has not run the migration.
+    """
+    if not ctx['queued'] or not ctx['columns']:
+        return
+    values = {
+        'client_uuid': ctx['client_uuid'],
+        'entry_source_time': ctx['entry_time'],
+        'sync_received_time': datetime.now(),
+        'clock_skew_secs': ctx['clock_skew_secs'],
+        'face_verify_status': ctx['face_verify_status'],
+        'match_confidence': ctx['match_confidence'],
+        'needs_review': ctx['needs_review'],
+        'dup_of': ctx['dup_of'],
+    }
+    usable = [(c, v) for c, v in values.items() if c in ctx['columns']]
+    if not usable:
+        return
+    sets = ', '.join(f"{c} = %s" for c, _ in usable)
+    try:
+        cursor.execute(f"UPDATE daily_attendance SET {sets} WHERE daily_atten_id = %s",
+                       tuple(v for _, v in usable) + (attendance_id,))
+    except Exception as e:
+        print(f"⚠️  offline columns not written: {e}")
+
+
+def _supersede(cursor, older_id, winner_id):
+    """Retire a row our earlier offline punch beat."""
+    try:
+        cursor.execute(
+            "UPDATE daily_attendance SET is_active = 0, dup_of = %s, update_date_time = NOW() "
+            "WHERE daily_atten_id = %s", (winner_id, older_id))
+    except Exception as e:
+        print(f"⚠️  could not supersede duplicate {older_id}: {e}")
+
+
 # ── Manual attendance ────────────────────────────────────────
 @attendance_bp.route('/mark-attendance', methods=['POST'])
 
@@ -285,7 +455,18 @@ def mark_attendance_manual():
         employee = cursor.fetchone()
 
         if not employee:
+            # GET_EMPLOYEE_WITH_DETAILS is JOINED-only (status 35). Say why when the
+            # code exists in another HR status, so the operator / Sync Center row is
+            # actionable instead of "not found".
+            from src.mobileapp.src.onboarding.query import GET_EMPLOYEE_STATUS_ANY
+            cursor.execute(GET_EMPLOYEE_STATUS_ANY, (emp_code, branch_id, branch_id))
+            other = cursor.fetchone()
             cursor.close(); db.close()
+            if other:
+                return jsonify({"status": "error", "message":
+                    f"Employee {emp_code} ({other['name']}) is in HR status "
+                    f"{other['status_name'] or 'UNKNOWN'} - not eligible for attendance. "
+                    f"Update the employee's status to JOINED in HR first."}), 403
             return jsonify({"status": "error",
                             "message": f"Employee '{emp_code}' not found or inactive!"}), 404
 
@@ -323,19 +504,45 @@ def mark_attendance_manual():
             cursor.close(); db.close()
             return jsonify({"status": "error", "message": conflict}), 400
 
-        cursor.execute(Q.INSERT_ATTENDANCE,
-                     (eb_id, att_date,
-                      att_source, att_type,
-                      'P', branch_id,
-                      shift_id, shift_hours, department_id, designation_id,
-                      working_hours, idle_hours, geo_location))
+        # ── Offline replay handling ──────────────────────────────
+        # Only records the app queued offline take this path. A live submit is
+        # unchanged: it still gets its timestamp from the server clock and skips
+        # the cross-device duplicate check, which some workflows rely on.
+        offline = _offline_context(data, cursor, eb_id, att_date, att_type, shift_id)
+        # attendance_source stays 'F'/'A' as today — reports filter on those two
+        # codes, so an offline punch must not invent a third. Its offline-ness is
+        # recorded in entry_source_time / face_verify_status instead.
+        offline['source'] = att_source
+
+        if offline['queued']:
+            cursor.execute(Q.INSERT_ATTENDANCE_AT,
+                         (eb_id, att_date,
+                          offline['source'], att_type,
+                          'P', 0 if offline['dup_of'] else 1, branch_id,
+                          shift_id, shift_hours, department_id, designation_id,
+                          working_hours, idle_hours, geo_location,
+                          offline['punch_time']))
+        else:
+            cursor.execute(Q.INSERT_ATTENDANCE,
+                         (eb_id, att_date,
+                          offline['source'], att_type,
+                          'P', branch_id,
+                          shift_id, shift_hours, department_id, designation_id,
+                          working_hours, idle_hours, geo_location))
 
         # Get the inserted attendance ID
         attendance_id = cursor.lastrowid
 
-        # Save machine data to daily_ebmc_attendance if machines are provided
+        _apply_offline_columns(cursor, attendance_id, offline)
+
+        # Our punch was the earlier one — retire the row that beat us here.
+        if offline['supersedes']:
+            _supersede(cursor, offline['supersedes'], attendance_id)
+
+        # Save machine data to daily_ebmc_attendance if machines are provided.
+        # Skipped for a duplicate: the winning row already carries them.
         machine_ids = data.get('machine_ids', [])
-        if machine_ids and isinstance(machine_ids, list):
+        if machine_ids and isinstance(machine_ids, list) and not offline['dup_of']:
             for machine_id in machine_ids:
                 cursor.execute(Q.INSERT_MACHINE_ATTENDANCE,
                              (attendance_id, eb_id, machine_id, shift_id, branch_id))
@@ -344,13 +551,22 @@ def mark_attendance_manual():
         cursor.close()
         db.close()
 
+        message = f"Attendance marked for {name} (Manual)"
+        if offline['dup_of']:
+            message = (f"{name} already marked from another device — "
+                       f"kept the earlier punch")
+
         return jsonify({
             "status":    "success",
+            "id":        attendance_id,
             "emp_code":  emp_code,
             "emp_name":  name,
             "status_id": "3",
-            "is_active": 1,
-            "message":   f"Attendance marked for {name} (Manual)"
+            "is_active": 0 if offline['dup_of'] else 1,
+            "duplicate_of": offline['dup_of'],
+            "face_verify_status": offline['face_verify_status'],
+            "needs_review": bool(offline['needs_review']),
+            "message":   message
         })
     except Exception as e:
         print(f"❌ Manual attendance error: {str(e)}")
@@ -392,7 +608,7 @@ def check_face():
         #print(f"📥 Check-face POST: image={len(data.get('image', ''))} chars")
 
         img_rgb        = decode_image(data['image'])
-        live_encodings = face_recognition.face_encodings(img_rgb)
+        live_encodings = _encode_live_face(img_rgb)
 
         if not live_encodings:
             return jsonify({"status": "error",
@@ -502,10 +718,12 @@ def attendance_report():
         if attendance_date:
             # Single date mode
             date_condition = "da.attendance_date = %s"
+            leave_date_condition = "v.leave_date = %s"
             date_params = [attendance_date]
         elif from_date and to_date:
             # Date range mode
             date_condition = "da.attendance_date BETWEEN %s AND %s"
+            leave_date_condition = "v.leave_date BETWEEN %s AND %s"
             date_params = [from_date, to_date]
         else:
             return jsonify({'status': 'error', 'message': 'Either date or from_date/to_date is required'}), 400
@@ -542,8 +760,22 @@ def attendance_report():
             LEFT JOIN designation_mst d ON da.worked_designation_id = d.designation_id
             LEFT JOIN spell_mst      sm ON sm.spell_id = da.spell_id
             WHERE {date_condition} AND da.is_active = 1
+              -- Drop rejected (4) and cancelled (6) ATTENDANCE rows -- this is
+              -- da.status_id, not the employee's. COALESCE keeps rows with a
+              -- NULL status (legacy / bio-imported), which are still real.
+              -- p.active = 1 also drops attendance rows whose employee record
+              -- is missing entirely (NULL = 1 is false), which is the intent --
+              -- those are orphaned rows, not people.
+              -- NOTE: o.active = 1 stays in the JOIN above on purpose. It picks
+              -- the current official-details row among an employee's history;
+              -- moving it here would change the join, not add a filter.
+              AND p.active = 1
+              AND COALESCE(CAST(da.status_id AS UNSIGNED), 0) NOT IN (4, 6)
         """
-        params = date_params
+        # Copy, don't alias: the leave UNION below re-uses date_params, and every
+        # filter here appends to params. Sharing one list would feed the whole
+        # accumulated filter set back in as the leave query's date arguments.
+        params = list(date_params)
 
         # Add filters
         if branch_id:
@@ -559,8 +791,15 @@ def attendance_report():
             params.append(department_id)
         
         if emp_code:
-            sql += " AND o.emp_code LIKE %s"
-            params.append(f"%{emp_code}%")
+            # Exact match, not LIKE %..% — an EB No is an identifier, and the
+            # substring search meant typing "EJCL" returned 294 employees.
+            # TRIM because the column is utf8mb4_0900_ai_ci (NO PAD), so stored
+            # values with trailing spaces — there are a few — would never equal
+            # the stripped input. emp_code carries no index, so TRIM costs
+            # nothing here. The collation is already case/accent-insensitive.
+            # emp_name below stays a substring search; that one is a name lookup.
+            sql += " AND TRIM(o.emp_code) = %s"
+            params.append(emp_code)
         
         if emp_name:
             sql += " AND (p.first_name LIKE %s OR p.middle_name LIKE %s OR p.last_name LIKE %s)"
@@ -587,7 +826,63 @@ def attendance_report():
             sql += " AND da.attendance_type = %s"
             params.append(att_type)
 
-        sql += " ORDER BY da.attendance_date DESC, da.entry_time DESC"
+        # ── Approved leave, unioned in ────────────────────────────
+        # Leave has no daily_attendance row, so a worker's leave days are
+        # otherwise invisible next to their punches. Gated on emp_code: without
+        # that filter this would add every approved leave for every employee in
+        # the range and swamp the report — hence "when EB No is there, else the
+        # current query". vw_leave_dates already expands each transaction into
+        # one row per date and filters to approved (status = '3').
+        #
+        # Department and designation come from the employee master (o.*), not
+        # from da.worked_* — a leave day has no worked department.
+        #
+        # Column ORDER here must match the SELECT above exactly; UNION binds by
+        # position, not by name.
+        # att_type in the guard, not the WHERE: filtering the report to R/O/C
+        # means the caller does not want leave rows at all, so skip the union
+        # rather than bolting on a condition that is always true or always false.
+        if emp_code and att_type.upper() in ('', 'L'):
+            sql += f"""
+            UNION ALL
+            SELECT 0                      AS id,     -- not an editable attendance row
+                   o.emp_code, o.eb_id,
+                   CONCAT(p.first_name, ' ', COALESCE(p.middle_name, ''), ' ', COALESCE(p.last_name, '')) AS emp_name,
+                   COALESCE(ms.sub_dept_desc, '')        AS department_name,
+                   COALESCE(md.desig, '')                AS designation_name,
+                   ''                     AS shift_name,
+                   NULL                   AS shift_id,
+                   v.leave_date           AS attendance_date,
+                   NULL                   AS attendance_time,
+                   NULL                   AS exit_time,
+                   COALESCE(v.leave_type_code, '')       AS status,
+                   'L'                    AS att_type,
+                   8                      AS shift_hours,
+                   8                      AS working_hours,
+                   0                      AS idle_hours,
+                   COALESCE(v.leave_type_description, '') AS remarks,
+                   0                      AS has_photo
+            FROM vw_leave_dates v
+            JOIN hrms_ed_official_details o ON o.eb_id = v.eb_id AND o.active = 1
+            JOIN hrms_ed_personal_details p ON p.eb_id = v.eb_id
+            LEFT JOIN sub_dept_mst    ms ON o.sub_dept_id    = ms.sub_dept_id
+            LEFT JOIN designation_mst md ON o.designation_id = md.designation_id
+            WHERE {leave_date_condition}
+              AND p.active = 1
+              AND TRIM(o.emp_code) = %s
+              -- No status_id filter here on purpose: 4/6 are rejected/cancelled
+              -- ATTENDANCE states and a leave day has none. vw_leave_dates is
+              -- already scoped to approved transactions (status = '3').
+            """
+            params.extend(date_params)
+            params.append(emp_code)
+            if branch_id:
+                sql += " AND v.branch_id = %s"
+                params.append(branch_id)
+
+        # Ordered by output alias, not da.* — with the UNION above there is no
+        # single `da` to sort on.
+        sql += " ORDER BY attendance_date DESC, attendance_time DESC"
         print("Executing attendance report SQL:", sql)
         print("With parameters:", params)
         
@@ -600,7 +895,9 @@ def attendance_report():
         # up and hand the browser a 500. Chunked so a wide date range cannot
         # exceed max_allowed_packet.
         machines = {}
-        ids = [row['id'] for row in rows]
+        # Leave rows carry id = 0 and have no machines — skip them so the IN
+        # list stays the size of the real attendance rows.
+        ids = [row['id'] for row in rows if row['id']]
         for start in range(0, len(ids), 1000):
             chunk = ids[start:start + 1000]
             placeholders = ','.join(['%s'] * len(chunk))
@@ -630,7 +927,9 @@ def attendance_report():
                 'shift_name':       row['shift_name'] or '',
                 'shift_id':         row['shift_id'],
                 'attendance_date':  str(row['attendance_date']),
-                'attendance_time':  str(row['attendance_time']),
+                # Same None-guard as exit_time below: leave rows have no punch
+                # time, and str(None) would ship the literal text "None".
+                'attendance_time':  ('' if row.get('attendance_time') in (None, '') else str(row['attendance_time'])),
                 'exit_time':        ('' if row.get('exit_time') in (None, '') else str(row['exit_time'])),
                 'status':           row['status'] or '',
                 'att_type':         row['att_type'] or 'R',
@@ -663,9 +962,28 @@ def attendance_photo(att_id):
         if not row or not row.get('photo_att'):
             return jsonify({'status': 'error', 'message': 'No photo'}), 404
 
-        match     = re.search(r'base64,([^"]+)', row['photo_att'])
-        photo_b64 = match.group(1) if match else None
+        photo_b64 = _photo_b64(row['photo_att'])
+        if not photo_b64:
+            return jsonify({'status': 'error', 'message': 'No photo'}), 404
 
+        return jsonify({'status': 'success', 'photo_att': photo_b64})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@attendance_bp.route('/employee-face/<int:eb_id>', methods=['GET'])
+def employee_face(eb_id):
+    """Registered face for one employee, by eb_id.
+
+    /employee/<emp_code> also returns this photo, but alongside last-worked
+    department and machine lookups that exist to pre-fill the attendance ENTRY
+    form. Measured against this database those add ~1.3 s, which a read-only
+    view pays for nothing. This is the single indexed lookup on its own —
+    ~33 ms."""
+    try:
+        photo_b64 = _photo_b64(face_cache.get_photo_html(eb_id))
+        if not photo_b64:
+            return jsonify({'status': 'error', 'message': 'No photo'}), 404
         return jsonify({'status': 'success', 'photo_att': photo_b64})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -748,42 +1066,33 @@ def emp_wise_attendance():
                                  'to':   cur_d.strftime('%Y-%m-%d')})
                 cur_d += timedelta(days=1)
 
-        emp_sql = """
-            SELECT DISTINCT o.eb_id,
-                   COALESCE(o.emp_code, '') AS emp_code,
-                   TRIM(CONCAT(COALESCE(p.first_name,''), ' ',
-                               COALESCE(p.middle_name,''), ' ',
-                               COALESCE(p.last_name,''))) AS emp_name,
-                   COALESCE(s.sub_dept_desc, '') AS dept_name,
-                   COALESCE(d.desig, '')          AS desig_name
-            FROM hrms_ed_official_details o
-            LEFT JOIN hrms_ed_personal_details p ON o.eb_id = p.eb_id
-            LEFT JOIN sub_dept_mst s        ON o.sub_dept_id  = s.sub_dept_id
-            LEFT JOIN designation_mst d     ON o.designation_id = d.designation_id
-            WHERE (o.active IS NULL OR o.active != 0)
-        """
-        emp_params = []
-        if branch_id:
-            emp_sql += " AND o.branch_id = %s"
-            emp_params.append(branch_id)
-        if dept_id:
-            emp_sql += " AND o.sub_dept_id = %s"
-            emp_params.append(dept_id)
-        if designation_id:
-            emp_sql += " AND o.designation_id = %s"
-            emp_params.append(designation_id)
-        emp_sql += " ORDER BY o.emp_code"
-
-        cursor.execute(emp_sql, tuple(emp_params))
-        employees = cursor.fetchall()
-
+        # ── Rows: one per (employee, worked dept, shift, designation, type) ──
+        # The old report emitted one row per employee holding summed hours. This
+        # emits a muster line per distinct working context, because an employee
+        # can work different departments / shifts / designations inside the same
+        # range and merging those into one figure hides it.
+        #
+        # A cell is a DAY COUNT, not hours: 1 for a day with any record in that
+        # context, and a leave day counts 1 the same way. For monthly / fn_wise
+        # report types the cell is the number of such days inside the period.
         att_sql = """
             SELECT da.eb_id,
-                   DATE_FORMAT(da.attendance_date, '%Y-%m-%d') AS att_date,
-                   SUM(COALESCE(da.working_hours, 0)) AS total_hours
+                   DATE_FORMAT(da.attendance_date, '%Y-%m-%d')     AS att_date,
+                   COALESCE(s.sub_dept_desc, '')                   AS dept_name,
+                   COALESCE(sh.shift_name, da.spell, '')           AS shift_name,
+                   COALESCE(d.desig, '')                           AS desig_name,
+                   COALESCE(da.attendance_type, 'R')               AS att_type
             FROM daily_attendance da
+            LEFT JOIN sub_dept_mst    s  ON da.worked_department_id  = s.sub_dept_id
+            LEFT JOIN designation_mst d  ON da.worked_designation_id = d.designation_id
+            -- Shift, not spell: A1 and A2 are spells of shift A (spell_mst.shift_id
+            -- -> shift_mst). Grouping on the shift also stops a split shift being
+            -- counted as two days — both spells collapse into one row per date.
+            LEFT JOIN spell_mst      sm  ON sm.spell_id = da.spell_id
+            LEFT JOIN shift_mst      sh  ON sh.shift_id = sm.shift_id
             WHERE da.attendance_date BETWEEN %s AND %s
               AND da.is_active = 1
+              AND COALESCE(CAST(da.status_id AS UNSIGNED), 0) NOT IN (4, 6)
         """
         att_params = [from_date, to_date]
         if branch_id:
@@ -801,58 +1110,158 @@ def emp_wise_attendance():
         if designation_id:
             att_sql += " AND da.worked_designation_id = %s"
             att_params.append(designation_id)
-        att_sql += " GROUP BY da.eb_id, da.attendance_date"
+        # Group on the shift expression, not the `shift_name` alias: that alias
+        # now collides with the real shift_mst.shift_name column, so MySQL binds
+        # it to the column and only_full_group_by then rejects the da.spell
+        # fallback inside the COALESCE.
+        att_sql += (" GROUP BY da.eb_id, att_date, dept_name,"
+                    " COALESCE(sh.shift_name, da.spell, ''), desig_name, att_type")
 
         cursor.execute(att_sql, tuple(att_params))
         att_rows = cursor.fetchall()
+
+        # Leave days, as type L. Department / designation come from the employee
+        # master (a leave day has no worked department) and the shift is blank.
+        # vw_leave_dates is already one row per date, approved transactions only.
+        if not att_type or att_type.strip().upper() == 'L':
+            leave_sql = """
+                SELECT v.eb_id,
+                       DATE_FORMAT(v.leave_date, '%Y-%m-%d')  AS att_date,
+                       COALESCE(ms.sub_dept_desc, '')         AS dept_name,
+                       ''                                     AS shift_name,
+                       COALESCE(md.desig, '')                 AS desig_name,
+                       'L'                                    AS att_type
+                FROM vw_leave_dates v
+                JOIN hrms_ed_official_details o ON o.eb_id = v.eb_id AND o.active = 1
+                LEFT JOIN sub_dept_mst    ms ON o.sub_dept_id    = ms.sub_dept_id
+                LEFT JOIN designation_mst md ON o.designation_id = md.designation_id
+                WHERE v.leave_date BETWEEN %s AND %s
+            """
+            leave_params = [from_date, to_date]
+            if branch_id:
+                leave_sql += " AND v.branch_id = %s"
+                leave_params.append(branch_id)
+            if dept_id:
+                leave_sql += " AND o.sub_dept_id = %s"
+                leave_params.append(dept_id)
+            if designation_id:
+                leave_sql += " AND o.designation_id = %s"
+                leave_params.append(designation_id)
+            leave_sql += " GROUP BY v.eb_id, att_date, dept_name, desig_name"
+            cursor.execute(leave_sql, tuple(leave_params))
+            att_rows.extend(cursor.fetchall())
+
+        # Identity only for people who actually appear — an employee with nothing
+        # in the range is omitted rather than carried as an empty line.
+        eb_ids = sorted({r['eb_id'] for r in att_rows})
+        emp_meta = {}
+        for chunk_start in range(0, len(eb_ids), 1000):
+            chunk = eb_ids[chunk_start:chunk_start + 1000]
+            placeholders = ','.join(['%s'] * len(chunk))
+            cursor.execute(f"""
+                SELECT o.eb_id,
+                       COALESCE(o.emp_code, '') AS emp_code,
+                       TRIM(CONCAT(COALESCE(p.first_name,''), ' ',
+                                   COALESCE(p.middle_name,''), ' ',
+                                   COALESCE(p.last_name,''))) AS emp_name
+                FROM hrms_ed_official_details o
+                LEFT JOIN hrms_ed_personal_details p ON o.eb_id = p.eb_id
+                WHERE o.eb_id IN ({placeholders}) AND o.active = 1
+            """, tuple(chunk))
+            for m in cursor.fetchall():
+                emp_meta.setdefault(m['eb_id'], m)
+
         cursor.close()
         db.close()
 
-        att_map = defaultdict(dict)
+        # date -> period label, so each row buckets with one dict hit instead of
+        # rescanning the period list.
+        day_period = {}
+        for period in periods:
+            pf = datetime.strptime(period['from'], '%Y-%m-%d').date()
+            pt = datetime.strptime(period['to'],   '%Y-%m-%d').date()
+            d = pf
+            while d <= pt:
+                day_period[d.strftime('%Y-%m-%d')] = period['label']
+                d += timedelta(days=1)
+
+        labels = [p['label'] for p in periods]
+        TYPES  = ('R', 'O', 'C', 'L', 'H')
+
+        # (eb_id, dept, shift, desig, type) -> {period label: day count}
+        groups = defaultdict(lambda: defaultdict(int))
         for r in att_rows:
-            hrs = float(r['total_hours'] or 0)
-            att_map[r['eb_id']][r['att_date']] = hrs
+            label = day_period.get(r['att_date'])
+            if label is None:
+                continue
+            t = (r['att_type'] or 'R').strip().upper()
+            if t not in TYPES:
+                t = 'R'
+            key = (r['eb_id'], r['dept_name'] or '', r['shift_name'] or '',
+                   r['desig_name'] or '', t)
+            groups[key][label] += 1
+
+        def _zero_totals():
+            return {'tot_' + t.lower(): 0 for t in TYPES}
+
+        def _make_row(meta, dept, shift, desig, t, counts):
+            row = {
+                'emp_code':    meta.get('emp_code', ''),
+                'emp_name':    meta.get('emp_name', ''),
+                'dept':        dept,
+                'shift':       shift,
+                'designation': desig,
+                'att_type':    t,
+                'attendance':  {lb: (counts.get(lb) or '') for lb in labels},
+                'is_subtotal': False,
+                'tot_all':     sum(counts.values()),
+            }
+            row.update(_zero_totals())
+            row['tot_' + t.lower()] = sum(counts.values())
+            return row
 
         result_rows = []
-        for emp in employees:
-            eb_id    = emp['eb_id']
-            emp_data = att_map.get(eb_id, {})
-            attendance   = {}
-            total_hours  = 0.0
-            days_present = 0
-            for period in periods:
-                pf = datetime.strptime(period['from'], '%Y-%m-%d').date()
-                pt = datetime.strptime(period['to'],   '%Y-%m-%d').date()
-                period_hours = 0.0
-                d = pf
-                while d <= pt:
-                    period_hours += emp_data.get(d.strftime('%Y-%m-%d'), 0.0)
-                    d += timedelta(days=1)
-                if period_hours > 0:
-                    val = int(period_hours) if period_hours == int(period_hours) else round(period_hours, 1)
-                    attendance[period['label']] = val
-                    total_hours += period_hours
-                    days_present += 1
-                else:
-                    attendance[period['label']] = ''
-            result_rows.append({
-                'emp_code':      emp['emp_code'],
-                'emp_name':      emp['emp_name'],
-                'dept':          emp['dept_name'],
-                'designation':   emp['desig_name'],
-                'attendance':    attendance,
-                'total_hours':   round(total_hours, 1),
-                'total_present': days_present,
-                'total_absent':  len(periods) - days_present,
-            })
+        by_emp = defaultdict(list)
+        for key in groups:
+            by_emp[key[0]].append(key)
+
+        for eb_id in sorted(by_emp, key=lambda e: emp_meta.get(e, {}).get('emp_code', '')):
+            meta = emp_meta.get(eb_id, {})
+            keys = sorted(by_emp[eb_id], key=lambda k: (k[1], k[2], k[3], k[4]))
+            emp_rows = [_make_row(meta, k[1], k[2], k[3], k[4], groups[k]) for k in keys]
+            result_rows.extend(emp_rows)
+
+            # A subtotal only earns its line when the employee spans more than
+            # one context; otherwise it would just repeat the row above it.
+            if len(emp_rows) > 1:
+                merged = defaultdict(int)
+                sub = {'emp_code': meta.get('emp_code', ''),
+                       'emp_name': meta.get('emp_name', ''),
+                       'dept': '', 'shift': '', 'designation': '',
+                       'att_type': 'TOTAL', 'is_subtotal': True}
+                sub.update(_zero_totals())
+                for er in emp_rows:
+                    for lb in labels:
+                        v = er['attendance'][lb]
+                        if v != '':
+                            merged[lb] += v
+                    for t in TYPES:
+                        sub['tot_' + t.lower()] += er['tot_' + t.lower()]
+                sub['attendance'] = {lb: (merged.get(lb) or '') for lb in labels}
+                sub['tot_all'] = sum(merged.values())
+                result_rows.append(sub)
 
         return jsonify({
             'status':          'success',
             'report_type':     report_type,
             'from_date':       from_date,
             'to_date':         to_date,
-            'columns':         [p['label'] for p in periods],
-            'total_employees': len(result_rows),
+            'columns':         labels,
+            'total_types':     list(TYPES),
+            # H stays 0: this tenant has no holiday calendar. src/hrms/
+            # reportQueries.py reached the same conclusion. Fill it here if one
+            # is ever added.
+            'total_employees': len(by_emp),
             'employees':       result_rows,
         })
     except Exception as e:
