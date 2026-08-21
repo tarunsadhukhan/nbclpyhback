@@ -337,3 +337,38 @@ def search_employees():
         return jsonify({'status': 'success', 'data': rows, 'employees': rows, 'total': len(rows)})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# ── GET every employee's last-worked dept/designation/machines ───────────────
+@employees_bp.route('/employees/last-entries', methods=['GET'])
+def get_last_entries():
+    """Bulk form of the pre-fill block in get_employee_by_code, for the app's
+    offline warm-up: one row per employee who has attendance in the branch."""
+    branch_id = request.args.get('branch_id', type=int)
+    if not branch_id:
+        return jsonify({'status': 'error', 'message': 'branch_id is required'}), 400
+    try:
+        db     = get_db()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(Q.GET_LAST_ENTRIES_BY_BRANCH, (branch_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+
+        # The LEFT JOIN yields one row per (employee, machine); collapse to one
+        # row per employee with the machine ids gathered into a list.
+        by_code = {}
+        for r in rows:
+            entry = by_code.setdefault(r['emp_code'], {
+                'emp_code':       r['emp_code'],
+                'dept_id':        r['worked_department_id'],
+                'designation_id': r['worked_designation_id'],
+                'machine_ids':    [],
+            })
+            if r['mc_id'] and r['mc_id'] not in entry['machine_ids']:
+                entry['machine_ids'].append(r['mc_id'])
+
+        data = list(by_code.values())
+        return jsonify({'status': 'success', 'total': len(data), 'data': data})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500

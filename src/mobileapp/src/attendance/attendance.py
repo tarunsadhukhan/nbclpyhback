@@ -916,7 +916,10 @@ def emp_wise_attendance():
         if designation_id:
             emp_sql += " AND o.designation_id = %s"
             emp_params.append(designation_id)
-        emp_sql += " ORDER BY o.emp_code"
+        # ORDER BY the select-list alias, not o.emp_code: with SELECT DISTINCT,
+        # strict MySQL (ER_ORDER_BY_CLAUSE_NOT_IN_SELECT_LIST) rejects ordering
+        # by an expression that is not in the select list.
+        emp_sql += " ORDER BY emp_code"
 
         cursor.execute(emp_sql, tuple(emp_params))
         employees = cursor.fetchall()

@@ -99,3 +99,35 @@ INSERT_EMPLOYEE = """
 UPDATE_EMPLOYEE_FACE = "UPDATE employees SET face_embedding = %s WHERE emp_code = %s"
 
 SOFT_DELETE_EMPLOYEE = "UPDATE employees SET is_active = 0 WHERE id = %s"
+
+
+# Bulk form of GET_LAST_WORKED_BY_EB + GET_LAST_WORKED_MACHINES: every active
+# employee's most recent attendance in a branch, plus that row's machines, in
+# one round trip. The app's masters warm-up fills its offline last_entry table
+# from this — the per-employee form would be one request per employee.
+# Same employee filter as GET_EMPLOYEE_BY_CODE, so the offline pre-fill matches
+# what the online lookup would have returned.
+GET_LAST_ENTRIES_BY_BRANCH = """
+    SELECT t.emp_code,
+           t.worked_department_id,
+           t.worked_designation_id,
+           m.mc_id
+    FROM (
+        SELECT o.emp_code,
+               a.worked_department_id,
+               a.worked_designation_id,
+               a.daily_atten_id,
+               ROW_NUMBER() OVER (PARTITION BY a.eb_id
+                                  ORDER BY a.attendance_date DESC,
+                                           a.daily_atten_id  DESC) AS rn
+        FROM daily_attendance a
+        INNER JOIN hrms_ed_official_details o
+                ON o.eb_id = a.eb_id AND o.branch_id = a.branch_id
+        INNER JOIN hrms_ed_personal_details p
+                ON p.eb_id = o.eb_id AND p.active = 1 AND p.status_id = 35
+        WHERE a.branch_id = %s AND (a.is_active IS NULL OR a.is_active = 1)
+    ) t
+    LEFT JOIN daily_ebmc_attendance m
+           ON m.daily_atten_id = t.daily_atten_id AND m.is_active = 1
+    WHERE t.rn = 1
+"""
