@@ -59,6 +59,7 @@ def get_spells_query():
         FROM spell_mst sp
         INNER JOIN shift_mst sh ON sh.shift_id = sp.shift_id
         WHERE sp.status = 1
+          AND COALESCE(sp.active, 1) = 1
           AND sh.status = 1
           AND (:branch_id IS NULL OR sh.branch_id = :branch_id)
         ORDER BY sp.starting_time

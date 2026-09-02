@@ -142,7 +142,7 @@ def get_morrah_wt_jute_qualities_query():
 def get_spreader_roll_wt_spells_query():
     """Active spells for the spell (SHIFT) picker, branch-scoped via the parent
     shift. spell_mst has no branch_id/co_id; branch comes from shift_mst. Filter
-    is status = 1 (NOT active). Callers de-duplicate by spell_code in Python.
+    is status = 1 AND active <> 0. Callers de-duplicate by spell_code in Python.
 
     Mirrors get_spells_query() in src/juteProduction/spinning_query.py.
     """
@@ -153,6 +153,7 @@ def get_spreader_roll_wt_spells_query():
         FROM spell_mst sp
         INNER JOIN shift_mst sh ON sh.shift_id = sp.shift_id
         WHERE sp.status = 1
+          AND COALESCE(sp.active, 1) = 1
           AND sh.status = 1
           AND (:branch_id IS NULL OR sh.branch_id = :branch_id)
         ORDER BY sp.starting_time

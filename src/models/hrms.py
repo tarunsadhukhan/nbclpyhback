@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import Integer, String, BigInteger, Date, DateTime, Float, Boolean, TIMESTAMP, DECIMAL, LargeBinary, func
+from sqlalchemy import Integer, String, BigInteger, Date, DateTime, Float, Boolean, TIMESTAMP, DECIMAL, LargeBinary, func, Computed
 
 class Base(DeclarativeBase):
 	pass
@@ -16,6 +16,222 @@ class OutsiderRateApprove(Base):
 	app_date: Mapped[Date | None] = mapped_column(Date, nullable=True)
 	app_shift: Mapped[str | None] = mapped_column(String(2), nullable=True)
 	desig_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+# Worker Rate Muster: monthly rate parameters per worker (basic, DA, HRA/PF/ESI/PTAX
+# flags as 'Y'/'N'). One active row per employee; scope comes from the employee (eb_id).
+class WorkerRateMst(Base):
+	__tablename__ = "worker_rate_mst"
+	worker_rate_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	eb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+	effective_date: Mapped[Date | None] = mapped_column(Date, nullable=True)
+	fbasic: Mapped[float | None] = mapped_column(Float, nullable=True)
+	fbasic_hr: Mapped[float | None] = mapped_column(Float, nullable=True)
+	da_all: Mapped[str] = mapped_column(String(1), nullable=False, default="N")
+	da_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+	hra: Mapped[str] = mapped_column(String(1), nullable=False, default="N")
+	hrd: Mapped[str] = mapped_column(String(1), nullable=False, default="N")
+	quarter: Mapped[str] = mapped_column(String(1), nullable=False, default="N")
+	pf: Mapped[str] = mapped_column(String(1), nullable=False, default="N")
+	esi: Mapped[str] = mapped_column(String(1), nullable=False, default="N")
+	ptax: Mapped[str] = mapped_column(String(1), nullable=False, default="N")
+	is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Misc Earn / Extra Allowance rule per branch + department (+ optional designation)
+# + earn type (MISC EARN / BEAM CHANGES / OIL CHARGE). rate_per_hr is a stored
+# generated column in MySQL: amount / per_hrs * rate_pct / 100.
+class MiscEarnMst(Base):
+	__tablename__ = "misc_earn_mst"
+	misc_earn_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	dept_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	designation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+	cata_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+	earn_type: Mapped[str] = mapped_column(String(30), nullable=False)
+	amount: Mapped[float] = mapped_column(Float, nullable=False)
+	per_hrs: Mapped[float] = mapped_column(Float, nullable=False)
+	rate_pct: Mapped[float] = mapped_column(Float, nullable=False, default=100)
+	rate_per_hr: Mapped[float | None] = mapped_column(
+		Float, Computed("amount / per_hrs * rate_pct / 100", persisted=True), nullable=True)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Attendance Incentive rule per branch + employee category (category_mst):
+# amount per per_hrs block (Rs. 1 or 20 per 8 hrs), payable at eligibility_hrs (96)
+# in the fortnight. rate_per_hr is a stored generated column: amount / per_hrs.
+class AttenIncentiveMst(Base):
+	__tablename__ = "atten_incentive_mst"
+	atten_incentive_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	cata_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+	amount: Mapped[float] = mapped_column(Float, nullable=False)
+	per_hrs: Mapped[float] = mapped_column(Float, nullable=False)
+	eligibility_hrs: Mapped[float] = mapped_column(Float, nullable=False, default=96)
+	working_includes: Mapped[str | None] = mapped_column(String(100), nullable=True)
+	calc_on: Mapped[str | None] = mapped_column(String(100), nullable=True)
+	rate_per_hr: Mapped[float | None] = mapped_column(
+		Float, Computed("amount / per_hrs", persisted=True), nullable=True)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Winding Incentive scheme row per quality (WINDING INCENTIVE sheet): a flat
+# incentive_amt per eligibility_hrs (96) for warp qualities, or one row per
+# production slab (prod_from/prod_to bundles per 8 hrs) for weft qualities.
+# rate_per_hr is a stored generated column: incentive_amt / eligibility_hrs —
+# the winding production rate. Tenant-wide (no co_id/branch_id).
+class WindingIncentiveMst(Base):
+	__tablename__ = "winding_incentive_mst"
+	winding_incentive_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	quality_code: Mapped[str] = mapped_column(String(10), nullable=False)
+	quality_name: Mapped[str] = mapped_column(String(100), nullable=False)
+	inc_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
+	grist_from: Mapped[float | None] = mapped_column(Float, nullable=True)
+	grist_to: Mapped[float | None] = mapped_column(Float, nullable=True)
+	prod_from: Mapped[float | None] = mapped_column(Float, nullable=True)
+	prod_to: Mapped[float | None] = mapped_column(Float, nullable=True)
+	incentive_amt: Mapped[float] = mapped_column(Float, nullable=False)
+	eligibility_hrs: Mapped[float] = mapped_column(Float, nullable=False, default=96)
+	unit: Mapped[str] = mapped_column(String(10), nullable=False, default="KG")
+	rate_per_hr: Mapped[float | None] = mapped_column(
+		Float, Computed("incentive_amt / eligibility_hrs", persisted=True), nullable=True)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Winding production entry (WINDING PRODUCTION sheet): one row per worker,
+# date, shift and quality. rate is snapshotted from the winding incentive
+# master (rate_per_hr) at save time; amount is a stored generated column
+# rate * prod_hrs. Scoped by branch_id (co filter via branch_mst).
+class WindingProduction(Base):
+	__tablename__ = "winding_production"
+	winding_prod_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	prod_date: Mapped[Date] = mapped_column(Date, nullable=False)
+	shift: Mapped[str] = mapped_column(String(5), nullable=False, default="A")
+	eb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+	wdg_q_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	winding_incentive_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	grist: Mapped[float | None] = mapped_column(Float, nullable=True)
+	prod_hrs: Mapped[float] = mapped_column(Float, nullable=False)
+	prod_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+	unit: Mapped[str] = mapped_column(String(10), nullable=False, default="KG")
+	rate: Mapped[float] = mapped_column(Float, nullable=False)
+	amount: Mapped[float | None] = mapped_column(
+		Float, Computed("round(rate * prod_hrs, 2)", persisted=True), nullable=True)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Beaming production: one row per machine + date + shift + quality (BEAMING PROD sheet).
+# Rate is snapshotted from tbl_nbcl_wages_quality_mst.quality_rate; amount is generated.
+class BeamingProduction(Base):
+	__tablename__ = "beaming_production"
+	beaming_prod_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	prod_date: Mapped[Date] = mapped_column(Date, nullable=False)
+	shift: Mapped[str] = mapped_column(String(5), nullable=False, default="A")
+	machine_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	quality_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	prod_qty: Mapped[float] = mapped_column(Float, nullable=False)
+	rate: Mapped[float] = mapped_column(Float, nullable=False)
+	amount: Mapped[float | None] = mapped_column(
+		Float, Computed("round(rate * prod_qty, 2)", persisted=True), nullable=True)
+	wk_hrs: Mapped[float | None] = mapped_column(Float, nullable=True)
+	lost_hrs: Mapped[float | None] = mapped_column(Float, nullable=True)
+	divisible_hrs: Mapped[float | None] = mapped_column(
+		Float, Computed("wk_hrs * 3", persisted=True), nullable=True)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Press production: one row per machine + date + shift + quality (PRESS sheet).
+# Same shape as BeamingProduction, but divisible_hrs = wk_hrs * 4 (not * 3).
+class PressProduction(Base):
+	__tablename__ = "press_production"
+	press_prod_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	prod_date: Mapped[Date] = mapped_column(Date, nullable=False)
+	shift: Mapped[str] = mapped_column(String(5), nullable=False, default="A")
+	machine_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	quality_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	prod_qty: Mapped[float] = mapped_column(Float, nullable=False)
+	rate: Mapped[float] = mapped_column(Float, nullable=False)
+	amount: Mapped[float | None] = mapped_column(
+		Float, Computed("round(rate * prod_qty, 2)", persisted=True), nullable=True)
+	wk_hrs: Mapped[float | None] = mapped_column(Float, nullable=True)
+	lost_hrs: Mapped[float | None] = mapped_column(Float, nullable=True)
+	divisible_hrs: Mapped[float | None] = mapped_column(
+		Float, Computed("wk_hrs * 4", persisted=True), nullable=True)
+	rate_per_hrs: Mapped[float | None] = mapped_column(
+		Float,
+		Computed("round(amount / nullif(divisible_hrs - ifnull(lost_hrs, 0), 0), 2)",
+				 persisted=True),
+		nullable=True)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Weaving production: one row per worker + date + shift + quality (WEAVING PROD sheet).
+# A weaver runs a pair of looms (machine_id / machine_id2). Rate is snapshotted from
+# tbl_nbcl_wages_quality_mst.quality_rate; amount and payable_amt (80%) are generated.
+class WeavingProduction(Base):
+	__tablename__ = "weaving_production"
+	weaving_prod_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	prod_date: Mapped[Date] = mapped_column(Date, nullable=False)
+	shift: Mapped[str] = mapped_column(String(5), nullable=False, default="A")
+	eb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+	machine_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	machine_id2: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	line_no: Mapped[str | None] = mapped_column(String(10), nullable=True)
+	quality_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	wk_hrs: Mapped[float | None] = mapped_column(Float, nullable=True)
+	prod_qty: Mapped[float] = mapped_column(Float, nullable=False)
+	rate: Mapped[float] = mapped_column(Float, nullable=False)
+	amount: Mapped[float | None] = mapped_column(
+		Float, Computed("round(rate * prod_qty, 2)", persisted=True), nullable=True)
+	payable_amt: Mapped[float | None] = mapped_column(
+		Float, Computed("round(amount * 0.8, 2)", persisted=True), nullable=True)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Finishing (sewing) production: one row per worker + date + shift + quality
+# (SEWING sheet: hirakol HK% / hemming HM% machines, dept 'SEWING'). Rate is
+# snapshotted from tbl_nbcl_wages_quality_mst.quality_rate; amount is generated.
+class FinishingProduction(Base):
+	__tablename__ = "finishing_production"
+	finishing_prod_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	prod_date: Mapped[Date] = mapped_column(Date, nullable=False)
+	shift: Mapped[str] = mapped_column(String(5), nullable=False, default="A")
+	eb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+	machine_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	quality_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	wk_hrs: Mapped[float | None] = mapped_column(Float, nullable=True)
+	prod_qty: Mapped[float] = mapped_column(Float, nullable=False)
+	rate: Mapped[float] = mapped_column(Float, nullable=False)
+	amount: Mapped[float | None] = mapped_column(
+		Float, Computed("round(rate * prod_qty, 2)", persisted=True), nullable=True)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+# Electric amount charged to an employee on a date (Other Menus -> Electric Data).
+# ponytail: plain active soft-delete; add canteen-style draft/approve statuses
+# if payroll starts consuming these rows.
+class ElectricDetails(Base):
+	__tablename__ = "electric_details"
+	tran_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+	branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+	tran_date: Mapped[Date] = mapped_column(Date, nullable=False)
+	eb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+	amount: Mapped[float] = mapped_column(Float, nullable=False)
+	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
+	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 # Canteen meals taken by an employee on a date, at an agreed rate.

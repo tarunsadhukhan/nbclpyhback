@@ -59,6 +59,12 @@ from src.masters.batchPlanMaster import router as batch_plan_master_router
 from src.masters.designation import router as designation_router
 from src.masters.category import router as category_router
 from src.masters.grade import router as grade_router
+from src.masters.quality import router as quality_router
+from src.production.winding import router as production_winding_router
+from src.production.beaming import router as production_beaming_router
+from src.production.press import router as production_press_router
+from src.production.weaving import router as production_weaving_router
+from src.production.finishing import router as production_finishing_router
 from src.masters.contractor import router as contractor_router
 from src.masters.bankDetails import router as bank_details_router
 from src.masters.itemBom import router as item_bom_router
@@ -144,8 +150,13 @@ from src.hrms.attendance import router as hrms_attendance_router
 from src.hrms.payslipPrintComponent import router as hrms_payslip_print_component_router
 from src.hrms.bioAttendance import router as hrms_bio_attendance_router
 from src.hrms.outsiderRate import router as hrms_outsider_rate_router
+from src.hrms.workerRate import router as hrms_worker_rate_router
+from src.hrms.miscEarn import router as hrms_misc_earn_router
+from src.hrms.attenIncentive import router as hrms_atten_incentive_router
+from src.hrms.windingIncentive import router as hrms_winding_incentive_router
 from src.hrms.cashHands import router as hrms_cash_hands_router
 from src.hrms.canteenDetails import router as hrms_canteen_details_router
+from src.hrms.electricData import router as hrms_electric_data_router
 from src.common.attachments.router import router as attachments_router
 from src.config.cors import add_cors_middleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -214,6 +225,12 @@ app.include_router(batch_plan_master_router, prefix="/api/batchPlanMaster", tags
 app.include_router(designation_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
 app.include_router(category_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
 app.include_router(grade_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
+app.include_router(quality_router, prefix="/api/productionMasters", tags=["production-masters"])
+app.include_router(production_winding_router, prefix="/api/production", tags=["production"])
+app.include_router(production_beaming_router, prefix="/api/production", tags=["production"])
+app.include_router(production_press_router, prefix="/api/production", tags=["production"])
+app.include_router(production_weaving_router, prefix="/api/production", tags=["production"])
+app.include_router(production_finishing_router, prefix="/api/production", tags=["production"])
 app.include_router(contractor_router, prefix="/api/contractorMaster", tags=["masters-contractor"])
 app.include_router(bank_details_router, prefix="/api/bankDetailsMaster", tags=["masters-bank-details"])
 app.include_router(item_bom_router, prefix="/api/itemBomMaster", tags=["masters-item-bom"])
@@ -326,7 +343,12 @@ app.include_router(hrms_attendance_router, prefix="/api/hrms", tags=["hrms-atten
 app.include_router(hrms_payslip_print_component_router, prefix="/api/hrms", tags=["hrms-payslip-print-component"])
 app.include_router(hrms_bio_attendance_router, prefix="/api/hrmsMasters", tags=["hrms-bio-attendance"])
 app.include_router(hrms_outsider_rate_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
+app.include_router(hrms_worker_rate_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
+app.include_router(hrms_misc_earn_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
+app.include_router(hrms_atten_incentive_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
+app.include_router(hrms_winding_incentive_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
 app.include_router(hrms_canteen_details_router, prefix="/api/hrms", tags=["hrms-canteen-details"])
+app.include_router(hrms_electric_data_router, prefix="/api/hrms", tags=["hrms-electric-data"])
 
 # Accounting routers
 app.include_router(accounting_router, prefix="/api/accounting", tags=["accounting"])

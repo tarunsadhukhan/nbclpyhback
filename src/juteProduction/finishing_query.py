@@ -19,7 +19,7 @@ dimension — ``process`` — to every WHERE clause and exact-key lookup. Covers
 Mirrors beaming_query.py / spng_target_map_query.py conventions throughout: named
 binds, the ``:x IS NULL OR ...`` optional-filter idiom, soft-delete via active=1, and
 de-duplication left to the router. ``machine_mst`` / ``machine_type_mst`` filter
-``active = 1``; ``spell_mst`` filters ``status = 1`` (NOT active). The per-process
+``active = 1``; ``spell_mst`` filters ``status = 1`` AND ``active <> 0``. The per-process
 machine type resolves against ``machine_type_mst.machine_type_name`` bound at call time
 via :machine_type (FINISHING_MACHINE_TYPE_NAMES) so no constant is imported here. Column
 names/types match finishing_models.py exactly.
@@ -424,7 +424,7 @@ def clear_finishing_grid_value_query():
 def get_finishing_spells_query():
     """Active spells with working hours for the entry header.
 
-    spell_mst filters status = 1 (NOT active); shift_mst filters status = 1. Callers
+    spell_mst filters status = 1 and active <> 0; shift_mst filters status = 1. Callers
     de-dup by spell_code in Python (branch fanout), keeping the first row per code.
     """
     return text(
@@ -434,6 +434,7 @@ def get_finishing_spells_query():
         FROM spell_mst sp
         INNER JOIN shift_mst sh ON sh.shift_id = sp.shift_id
         WHERE sp.status = 1
+          AND COALESCE(sp.active, 1) = 1
           AND sh.status = 1
           AND (:branch_id IS NULL OR sh.branch_id = :branch_id)
         ORDER BY sp.starting_time

@@ -105,11 +105,16 @@ def get_rate_designations_query():
 
 
 def get_rate_shifts_query():
-    """Distinct spell codes configured for the tenant (A1/A2/B1/B2/C ...)."""
+    """Distinct spell codes configured for the tenant (A1/A2/B1/B2/C ...).
+
+    Spells switched off in the spell master (active = 0) are left out — this
+    feeds the spell dropdown on the outsider rate and production entry pages.
+    """
     return text("""
         SELECT DISTINCT s.spell_name
         FROM spell_mst s
-        WHERE s.status = 1 AND s.spell_name IS NOT NULL AND s.spell_name <> ''
+        WHERE s.status = 1 AND COALESCE(s.active, 1) = 1
+          AND s.spell_name IS NOT NULL AND s.spell_name <> ''
         ORDER BY s.spell_name
     """)
 

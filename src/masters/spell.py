@@ -18,6 +18,17 @@ from src.common.utils import parse_json_body
 router = APIRouter()
 
 
+def _parse_active(raw):
+    """active flag: 1/0 (bool or int); missing -> 1."""
+    if raw in (None, ""):
+        return 1
+    if raw in (True, 1, "1", "true"):
+        return 1
+    if raw in (False, 0, "0", "false"):
+        return 0
+    raise HTTPException(status_code=400, detail="active must be 0 or 1")
+
+
 # ─── Helpers ────────────────────────────────────────────────────────
 
 
@@ -59,6 +70,7 @@ def get_spell_list_query(branch_ids=None):
             sp.late_minutes,
             sp.late_minutes2,
             sp.is_overnight,
+            sp.active,
             sp.updated_by,
             sp.update_date_time,
             sh.shift_name,
@@ -92,6 +104,7 @@ def get_spell_by_id_query():
             sp.late_minutes,
             sp.late_minutes2,
             sp.is_overnight,
+            sp.active,
             sp.updated_by,
             sp.update_date_time,
             sh.shift_name,
@@ -263,11 +276,11 @@ def spell_create(
             INSERT INTO spell_mst
                 (spell_code, spell_name, status, shift_id, starting_time, end_time,
                  working_hours, minimum_work_hours, break_hours, halfday_work_hours,
-                 late_minutes, late_minutes2, is_overnight, updated_by, update_date_time)
+                 late_minutes, late_minutes2, is_overnight, active, updated_by, update_date_time)
             VALUES
                 (:spell_code, :spell_name, :status, :shift_id, :starting_time, :end_time,
                  :working_hours, :minimum_work_hours, :break_hours, :halfday_work_hours,
-                 :late_minutes, :late_minutes2, :is_overnight, :updated_by, :update_date_time)
+                 :late_minutes, :late_minutes2, :is_overnight, :active, :updated_by, :update_date_time)
         """)
         result = db.execute(insert_query, {
             "spell_code": body.get("spell_code", ""),
@@ -283,6 +296,7 @@ def spell_create(
             "late_minutes": int(body["late_minutes"]) if body.get("late_minutes") else None,
             "late_minutes2": int(body["late_minutes2"]) if body.get("late_minutes2") else None,
             "is_overnight": int(body["is_overnight"]) if body.get("is_overnight") else 0,
+            "active": _parse_active(body.get("active")),
             "updated_by": user_id,
             "update_date_time": datetime.now(),
         })
@@ -369,6 +383,8 @@ def spell_edit(
         existing.late_minutes = int(body["late_minutes"]) if body.get("late_minutes") is not None else existing.late_minutes
         existing.late_minutes2 = int(body["late_minutes2"]) if body.get("late_minutes2") is not None else existing.late_minutes2
         existing.is_overnight = int(body["is_overnight"]) if body.get("is_overnight") is not None else existing.is_overnight
+        if body.get("active") is not None:
+            existing.active = _parse_active(body.get("active"))
         existing.updated_by = user_id
         existing.update_date_time = datetime.now()
 

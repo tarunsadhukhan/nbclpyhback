@@ -246,6 +246,24 @@ class GradeTable(Base):
 
 
 # =============================================================================
+# WAGES QUALITY MASTER (NBCL production)
+# =============================================================================
+class WagesQualityMst(Base):
+    """Production wages quality master (rate + conversion factor per dept).
+    Tenant-wide (no co_id/branch_id); dept_id -> dept_mst."""
+    __tablename__ = "tbl_nbcl_wages_quality_mst"
+
+    quality_id = Column(Integer, primary_key=True, autoincrement=True)
+    dept_id = Column(Integer, nullable=True)
+    quality_code = Column(String(10), nullable=True)
+    quality_desc = Column(String(100), nullable=True)
+    quality_rate = Column(DECIMAL(10, 7), nullable=True)
+    conv_factor = Column(DECIMAL(10, 7), nullable=True)
+    status_id = Column(Integer, nullable=True)
+    active = Column(Integer, nullable=True, default=1)
+
+
+# =============================================================================
 # SHIFT MASTER
 # =============================================================================
 class ShiftMst(Base):
@@ -298,6 +316,7 @@ class SpellMst(Base):
     is_overnight = Column(Integer, default=0, server_default="0")
     updated_by = Column(Integer, nullable=True)
     update_date_time = Column(TIMESTAMP, nullable=True, server_default=func.current_timestamp())
+    active = Column(Integer, nullable=True, default=1)
 
 
 # =============================================================================

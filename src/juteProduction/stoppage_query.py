@@ -8,7 +8,7 @@ department on insert and read-tolerant of legacy NULLs via COALESCE.
 
 Conventions mirror winding_query.py / query.py: sqlalchemy.text() with named
 binds, the ``:x IS NULL OR ...`` optional-filter idiom, and spell_id (INT) joined
-to spell_mst (which keys activity by ``status``, NOT ``active``).
+to spell_mst (status = 1 and not deactivated, i.e. active <> 0).
 
 LOCKED DECISION: the setup machine query exposes ALL active machines — it does
 NOT filter by machine_type_name (so a stoppage can be logged for any department's
@@ -60,7 +60,7 @@ def get_stoppage_spells_query():
 
     Trimmed copy of spinning_query.get_spells_query — only the fields the stoppage
     page needs (spell_id, spell_code, spell_name, working_hours). spell_mst keys
-    activity by ``status`` (1 = active), NOT an ``active`` column; the parent
+    activity by ``status`` (1 = active) AND the master's ``active`` flag; the parent
     shift is likewise filtered by status. Callers de-duplicate by spell_code
     (some tenants carry a duplicate spell_code under a second branch's shift).
     """
@@ -70,6 +70,7 @@ def get_stoppage_spells_query():
         FROM spell_mst sp
         INNER JOIN shift_mst sh ON sh.shift_id = sp.shift_id
         WHERE sp.status = 1
+          AND COALESCE(sp.active, 1) = 1
           AND sh.status = 1
           AND (:branch_id IS NULL OR sh.branch_id = :branch_id)
         ORDER BY sp.starting_time

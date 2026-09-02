@@ -26,7 +26,7 @@ The SINGLE shared query module imported by all three weaving routers, exactly as
 Mirrors ``beaming_query.py`` / ``spinning_query.py`` conventions throughout: named binds,
 the ``:x IS NULL OR ...`` optional-filter idiom, soft-delete via active=1, and
 de-duplication left to the router. ``machine_mst`` / ``machine_type_mst`` filter
-``active = 1``; ``spell_mst`` filters ``status = 1`` (NOT active).
+``active = 1``; ``spell_mst`` filters ``status = 1`` AND ``active <> 0``.
 
 The Weaving (Loom) machine type resolves against ``machine_type_mst.machine_type_name`` =
 'Loom' (case-insensitive under MySQL's default collation; dev3 machine_type_id 6 'LOOM'),
@@ -582,7 +582,7 @@ def get_weaving_entry_machines_query():
 def get_weaving_spells_query():
     """Active spells with working hours for the entry header.
 
-    spell_mst filters status = 1 (NOT active); shift_mst filters status = 1. Returns
+    spell_mst filters status = 1 and active <> 0; shift_mst filters status = 1. Returns
     spell_id (daily table stores INT spell_id) plus the code/name/hours. Callers must
     de-dup by spell_code in Python (branch fanout), keeping the first row per code.
     """
@@ -593,6 +593,7 @@ def get_weaving_spells_query():
         FROM spell_mst sp
         INNER JOIN shift_mst sh ON sh.shift_id = sp.shift_id
         WHERE sp.status = 1
+          AND COALESCE(sp.active, 1) = 1
           AND sh.status = 1
           AND (:branch_id IS NULL OR sh.branch_id = :branch_id)
         ORDER BY sp.starting_time

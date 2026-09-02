@@ -14,7 +14,7 @@ Covers all three routers (SPEC §A.6 / §B.5 / §C.4):
 Mirrors spinning_query.py / spng_target_map_query.py conventions throughout: named
 binds, the ``:x IS NULL OR ...`` optional-filter idiom, soft-delete via active=1, and
 de-duplication left to the router. ``machine_mst`` / ``machine_type_mst`` filter
-``active = 1``; ``spell_mst`` filters ``status = 1`` (NOT active) — SPEC §9.
+``active = 1``; ``spell_mst`` filters ``status = 1`` AND ``active <> 0`` — SPEC §9.
 
 The Beaming machine type resolves against ``machine_type_mst.machine_type_name`` =
 'Beaming' (dev3 machine_type_id 12, SPEC §0.1), bound at call time via :beaming_type so
@@ -575,7 +575,7 @@ def get_beaming_entry_machines_query():
 def get_beaming_spells_query():
     """Active spells with working hours for the entry header (SPEC §9).
 
-    spell_mst filters status = 1 (NOT active); shift_mst filters status = 1. Returns
+    spell_mst filters status = 1 and active <> 0; shift_mst filters status = 1. Returns
     spell_id (daily table stores INT spell_id) plus the code/name/hours. Callers must
     de-dup by spell_code in Python (branch fanout), keeping the first row per code.
     """
@@ -586,6 +586,7 @@ def get_beaming_spells_query():
         FROM spell_mst sp
         INNER JOIN shift_mst sh ON sh.shift_id = sp.shift_id
         WHERE sp.status = 1
+          AND COALESCE(sp.active, 1) = 1
           AND sh.status = 1
           AND (:branch_id IS NULL OR sh.branch_id = :branch_id)
         ORDER BY sp.starting_time
