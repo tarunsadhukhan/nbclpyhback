@@ -5,6 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # The Docker image installs from THIS list only (Dockerfile runs
+    # `uv pip install --system --requirements pyproject.toml`), so anything the
+    # code imports has to be here — requirements.txt is not read at build time.
+    "apscheduler>=3.10.4",
     "bcrypt==3.2.0",
     "boto3>=1.43.14",
     "cryptography>=44.0.3",
@@ -14,6 +18,7 @@ dependencies = [
     "fastapi>=0.115.11",
     "flask>=3.1.3",
     "flask-cors>=6.0.2",
+    "httpx>=0.27.0",
     "mysql-connector-python>=9.7.0",
     "numpy>=2.4.6",
     "opencv-python-headless>=4.13.0.92",
