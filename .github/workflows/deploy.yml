@@ -80,5 +80,8 @@ jobs:
             docker network inspect nbclerp >/dev/null 2>&1 || docker network create nbclerp
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose pull
-            docker compose up -d
+            # --remove-orphans: containers left behind by an older version of
+            # this compose file (e.g. before container_name: was set) keep
+            # running and keep holding host ports, which is what broke run #9.
+            docker compose up -d --remove-orphans
             docker image prune -f

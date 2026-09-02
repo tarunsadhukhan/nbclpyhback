@@ -27,8 +27,13 @@ services:
     container_name: nbclerp-scheduler
     restart: unless-stopped
     command: uvicorn src.scheduler_main:app --host 0.0.0.0 --port 48480
-    ports:
-      - "48480:48480"
+    # No `ports:` on purpose. Nothing outside the compose network calls this
+    # service, and publishing 48480 on the host made every deploy die with
+    # "Bind for 0.0.0.0:48480 failed: port is already allocated" once a stray
+    # container held it. It still listens on 48480 inside the nbclerp network.
+    # Health check from the VPS (python:3.12-slim has no curl):
+    #   docker exec nbclerp-scheduler python -c \
+    #     "import urllib.request;print(urllib.request.urlopen('http://localhost:48480/health').read().decode())"
     env_file: .env
     environment:
       - TZ=Asia/Kolkata
