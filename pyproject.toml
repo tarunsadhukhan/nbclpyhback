@@ -5,9 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # The Docker image installs from THIS list only (Dockerfile runs
-    # `uv pip install --system --requirements pyproject.toml`), so anything the
-    # code imports has to be here — requirements.txt is not read at build time.
+    # The Docker image installs the pinned versions from uv.lock (Dockerfile
+    # runs `uv export --frozen` then `uv pip install`), so after adding or
+    # changing anything here run `uv lock` and commit uv.lock — requirements.txt
+    # is not read at build time.
     "apscheduler>=3.10.4",
     "bcrypt==3.2.0",
     "boto3>=1.43.14",

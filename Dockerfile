@@ -118,10 +118,17 @@ ENV ENV=$ENV
 COPY pyproject.toml ./
 COPY . .
 
-# Install dependencies
+# Install dependencies from uv.lock, NOT by re-resolving pyproject.toml.
+# `uv pip install --requirements pyproject.toml` ignored the lock and pulled
+# whatever was newest on PyPI at build time, so the image drifted from the
+# versions tested locally. On 2026-09-02 that meant anyio 4.15.0 + starlette
+# 1.6.0, and starlette's WSGI bridge (which mounts the mobile Flask app) then
+# failed every request with "module 'anyio' has no attribute 'from_thread'".
+# Every mobile-app route on :8001 returned a JSON 500 while the portal (FastAPI
+# routes) kept working. Run `uv lock` after changing dependencies.
 RUN pip install --upgrade pip uv python-dotenv \
-  && uv pip install --system --requirements pyproject.toml \
-  && pip install uvicorn
+  && uv export --frozen --no-hashes --no-dev --no-emit-project -o /tmp/requirements.lock.txt \
+  && uv pip install --system -r /tmp/requirements.lock.txt
 
 EXPOSE 8000
 
