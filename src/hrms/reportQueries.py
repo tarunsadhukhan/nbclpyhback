@@ -784,3 +784,66 @@ def get_cash_attendance_query():
     ORDER BY da.attendance_date, sd.sub_dept_desc, eb_no;
     """
     return text(sql)
+
+
+def get_employee_face_query():
+    """
+    Employee face register (employee_face_mst) with the employee resolved to
+    emp_code / name / department via hrms_ed_official_details. The embedding
+    and photo blobs come back as presence flags only (they are 3-120 KB each).
+
+    Parameters:
+        :co_id (int) - required (scoped via the employee's branch)
+        :branch_id (int or NULL) - optional
+        :active (int or NULL) - optional employee_face_mst.active filter (0/1)
+    """
+    sql = """
+    SELECT
+        ef.emp_face_id,
+        ef.eb_id,
+        od.emp_code,
+        CONCAT_WS(' ', pd.first_name, NULLIF(pd.middle_name, ''), NULLIF(pd.last_name, '')) AS emp_name,
+        dm.dept_desc,
+        sd.sub_dept_desc,
+        ef.active,
+        (ef.face_embedding IS NOT NULL AND ef.face_embedding <> '') AS has_face,
+        (ef.face_embedding_mobile IS NOT NULL AND ef.face_embedding_mobile <> '') AS has_mobile_face,
+        (ef.photo_html IS NOT NULL AND ef.photo_html <> '') AS has_photo,
+        ef.mobile_model_ver,
+        ef.mobile_embed_updated,
+        ef.updated_by,
+        ef.updated_date_time
+    FROM employee_face_mst AS ef
+    INNER JOIN hrms_ed_personal_details AS pd ON pd.eb_id = ef.eb_id
+    INNER JOIN branch_mst AS bm ON bm.branch_id = pd.branch_id
+    LEFT JOIN hrms_ed_official_details AS od
+        ON od.eb_id = pd.eb_id AND od.active = 1
+    LEFT JOIN sub_dept_mst AS sd ON sd.sub_dept_id = od.sub_dept_id
+    LEFT JOIN dept_mst AS dm ON dm.dept_id = sd.dept_id
+    WHERE bm.co_id = :co_id
+        AND (:branch_id IS NULL OR pd.branch_id = :branch_id)
+        AND (:active IS NULL OR ef.active = :active)
+    ORDER BY ef.updated_date_time DESC, ef.emp_face_id DESC;
+    """
+    return text(sql)
+
+
+def get_employee_face_photo_query():
+    """
+    One employee_face_mst.photo_html (base64 image) by emp_face_id, scoped to
+    the company via the employee's branch.
+
+    Parameters:
+        :emp_face_id (int) - required
+        :co_id (int) - required
+    """
+    sql = """
+    SELECT ef.photo_html
+    FROM employee_face_mst AS ef
+    INNER JOIN hrms_ed_personal_details AS pd ON pd.eb_id = ef.eb_id
+    INNER JOIN branch_mst AS bm ON bm.branch_id = pd.branch_id
+    WHERE ef.emp_face_id = :emp_face_id
+        AND bm.co_id = :co_id
+    LIMIT 1;
+    """
+    return text(sql)
