@@ -3,10 +3,8 @@ HRMS / labour report endpoints, surfaced under Jute Production > Production
 Reports and HRMS > HRMS Reports. Mounted at /api/hrmsReports.
 """
 
-import base64
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from src.config.db import get_tenant_db
 from src.authorization.utils import get_current_user_with_refresh
@@ -26,8 +24,6 @@ from src.hrms.reportQueries import (
     get_spell_wise_query,
     get_bank_statement_query,
     get_hands_complement_query,
-    get_employee_face_query,
-    get_employee_face_photo_query,
 )
 
 logger = logging.getLogger(__name__)
@@ -852,102 +848,4 @@ async def get_cash_attendance_report(
         raise
     except Exception as e:
         logger.error(f"Error fetching cash attendance: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/employee-face")
-async def get_employee_face_report(
-    request: Request,
-    db: Session = Depends(get_tenant_db),
-    token_data: dict = Depends(get_current_user_with_refresh),
-    co_id: int | None = None,
-    branch_id: int | None = None,
-    active: int | None = None,
-):
-    """
-    Employee face register (employee_face_mst) with emp_code / name /
-    department resolved from hrms_ed_official_details. Embedding and photo
-    columns are returned as Yes/No flags, not the blobs.
-
-    Query params: co_id (required), branch_id (optional), active (optional 0/1).
-    """
-    try:
-        if not co_id:
-            raise HTTPException(status_code=400, detail="co_id is required")
-
-        rows = db.execute(get_employee_face_query(), {
-            "co_id": int(co_id),
-            "branch_id": int(branch_id) if branch_id else None,
-            "active": int(active) if active is not None else None,
-        }).fetchall()
-
-        def yn(v):
-            return "Yes" if v else "No"
-
-        def dt(v):
-            return v.strftime("%Y-%m-%d %H:%M") if hasattr(v, "strftime") else v
-
-        data = []
-        for row in rows:
-            m = dict(row._mapping)
-            data.append({
-                "id": m.get("emp_face_id"),
-                "emp_code": m.get("emp_code"),
-                "emp_name": m.get("emp_name"),
-                "department": m.get("dept_desc"),
-                "sub_department": m.get("sub_dept_desc"),
-                "active": yn(m.get("active")),
-                "has_face": yn(m.get("has_face")),
-                "has_mobile_face": yn(m.get("has_mobile_face")),
-                "has_photo": yn(m.get("has_photo")),
-                "mobile_model_ver": m.get("mobile_model_ver"),
-                "mobile_embed_updated": dt(m.get("mobile_embed_updated")),
-                "updated_by": m.get("updated_by"),
-                "updated_date_time": dt(m.get("updated_date_time")),
-            })
-
-        return {"data": data, "total": len(data)}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching employee face register: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/employee-face-photo/{emp_face_id}")
-async def get_employee_face_photo(
-    emp_face_id: int,
-    request: Request,
-    db: Session = Depends(get_tenant_db),
-    token_data: dict = Depends(get_current_user_with_refresh),
-    co_id: int | None = None,
-):
-    """
-    The captured face photo (employee_face_mst.photo_html, stored as base64)
-    for one register row, as image bytes. Query params: co_id (required).
-    """
-    try:
-        if not co_id:
-            raise HTTPException(status_code=400, detail="co_id is required")
-
-        row = db.execute(get_employee_face_photo_query(), {
-            "emp_face_id": int(emp_face_id),
-            "co_id": int(co_id),
-        }).fetchone()
-        b64 = row._mapping.get("photo_html") if row else None
-        if not b64:
-            raise HTTPException(status_code=404, detail="No photo for this face record")
-
-        # Stored as raw base64; tolerate a data-URL prefix just in case.
-        if b64.startswith("data:"):
-            b64 = b64.split(",", 1)[-1]
-        image = base64.b64decode(b64)
-        media_type = "image/png" if image.startswith(b"\x89PNG") else "image/jpeg"
-        return Response(content=image, media_type=media_type)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching employee face photo: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
