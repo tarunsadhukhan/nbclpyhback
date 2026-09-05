@@ -8,7 +8,7 @@ The sibling frontend repo is at `../vowerp3ui` (see its `CLAUDE.md` and `docs/cl
 
 ## Core guides
 
-| File | Purpose |
+| File | Purpose |check
 |------|---------|
 | `CLAUDE.md` | Main developer guide: three-persona architecture, tenancy model, DB patterns, conventions, file-path registry |
 | `README.md` | Setup and Docker commands |

@@ -28,6 +28,7 @@ user and do not hardcode creds elsewhere.
 | **dev3** | http://dev3.localhost:3000 | Portal | `user1@empirejute.com` | `vowjute@1234` | The Empire Jute Company Limited (`1`) | Factory (`2`) | Default QA target. Test on Factory only — deselect "Head Office" (`sidebar_selectedBranches` must be `[2]`). |
 | **sls** | http://sls.localhost:3000 | Portal | `slsuser@vowerp.co.in` | `sls#123456` | co_id `106` | "FACTORY" = branches `4` / `29` / `87` | Prod-ish tenant. Confirm before writing any data. |
 | **amcl** | http://amcl.localhost:3000 | Portal | _TBD — add when known_ | _TBD_ | _TBD_ | _TBD_ | amcl admin role is `17` (`amclsuperadmin`), not `1`. |
+| **nbcl** | http://nbcl.localhost:3001 | Portal | `nbcluser@nbcl.in` | `sls#123456` | NORTHBROOK JUTE COMPANY LIMITED (`106`) | MILL (`87`) | Production tenant (same DB as the VPS) — read-only unless the user approves writes. Stack runs on :3001 / :8001 in the e:\test\nbcl workspace. Sign-in form is at `/` (there is no `/login` route). |
 
 ## Console/Admin logins (dashboardctrldesk / dashboardadmin)
 
