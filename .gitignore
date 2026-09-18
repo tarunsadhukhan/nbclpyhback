@@ -4,3 +4,7 @@ __pycache__/
 VOWERP3BE.egg-info/
 .venv
 env/*.env
+
+# Local copies of docker/deploy files taken before the two-VPS split.
+# Never commit: pyhback's copy includes env.original with live DB credentials.
+docker-backup/
