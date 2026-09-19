@@ -37,12 +37,10 @@ class PermissionResponse(BaseModel):
 
 
 def _cookie_settings() -> Dict[str, str | bool | None]:
-    env_value = os.getenv("ENV", "development")
-    return {
-        "domain": ".vowerp.co.in" if env_value == "production" else None,
-        "secure": env_value == "production",
-        "samesite": "None" if env_value == "production" else "Lax",
-    }
+    # Thin wrapper; the domain is no longer hardcoded. See src/config/cookies.py.
+    from src.config.cookies import cookie_settings
+
+    return cookie_settings()
 
 
 def _normalise_path(path: str | None) -> str:

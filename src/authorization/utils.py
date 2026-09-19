@@ -75,12 +75,11 @@ def verify_access_token(access_token: Optional[str] = Cookie(None, alias="access
 
 
 def _refresh_cookie_settings() -> Dict[str, Any]:
-    env_value = os.getenv("ENV", "development")
-    return {
-        "secure": env_value == "production",
-        "domain": ".vowerp.co.in" if env_value == "production" else None,
-        "samesite": "None" if env_value == "production" else "Lax",
-    }
+    # Kept as a thin wrapper so existing call sites stay unchanged; the domain
+    # is no longer hardcoded here. See src/config/cookies.py.
+    from src.config.cookies import cookie_settings
+
+    return cookie_settings()
 
 
 def _fetch_refresh_token(

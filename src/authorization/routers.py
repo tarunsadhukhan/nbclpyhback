@@ -359,10 +359,12 @@ def verify_session(request: Request):
                         response = JSONResponse(content={"ok": True})
 
                         # Set only the new access token cookie
-                        ENV = os.getenv("ENV", "development")
-                        COOKIE_DOMAIN = ".vowerp.co.in" if ENV == "production" else None
-                        SECURE = True if ENV == "production" else False
-                        SAMESITE = "None" if ENV == "production" else "Lax"
+                        from src.config.cookies import cookie_settings
+
+                        _cs = cookie_settings()
+                        COOKIE_DOMAIN = _cs["domain"]
+                        SECURE = _cs["secure"]
+                        SAMESITE = _cs["samesite"]
 
                         response.set_cookie(
                             key="access_token",

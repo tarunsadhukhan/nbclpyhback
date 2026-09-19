@@ -113,10 +113,12 @@ def login_user_console(
             )
 
             # Set only access token cookie and ensure any legacy refresh cookie is cleared
-            ENV = os.getenv("ENV", "development")
-            COOKIE_DOMAIN = ".vowerp.co.in" if ENV == "production" else None
-            SECURE = True if ENV == "production" else False
-            SAMESITE = "None" if ENV == "production" else "Lax"
+            from src.config.cookies import cookie_settings
+
+            _cs = cookie_settings()
+            COOKIE_DOMAIN = _cs["domain"]
+            SECURE = _cs["secure"]
+            SAMESITE = _cs["samesite"]
 
             response.set_cookie(
                 key="access_token",
@@ -253,10 +255,12 @@ def login_user(
                 )
 
                 # Set cookie with proper configuration
-                ENV = os.getenv("ENV", "development")
-                COOKIE_DOMAIN = ".vowerp.co.in" if ENV == "production" else None
-                SECURE = True if ENV == "production" else False
-                SAMESITE = "None" if ENV == "production" else "Lax"
+                from src.config.cookies import cookie_settings
+
+                _cs = cookie_settings()
+                COOKIE_DOMAIN = _cs["domain"]
+                SECURE = _cs["secure"]
+                SAMESITE = _cs["samesite"]
                 
                 print(f"""🍪 Setting cookie with configuration:
                 Domain: {COOKIE_DOMAIN}
