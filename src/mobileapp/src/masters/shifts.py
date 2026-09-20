@@ -21,6 +21,11 @@ def get_shifts():
             # Retired spells are dropped: same rule as /spells and the jute
             # production queries (SPEC §9), NULL-tolerant so rows predating
             # either column stay visible.
+            # Do NOT add sm.active to ORDER BY: it is neither grouped nor
+            # aggregated, so MySQL's only_full_group_by rejects the whole
+            # statement with error 1055 and every mobile client gets a 500.
+            # It would also be a no-op, since the WHERE above already pins
+            # active to 1.
             cursor.execute("""
                 SELECT MIN(sm.spell_id) AS id,
                        sm.spell_name AS name,
@@ -33,7 +38,7 @@ def get_shifts():
                   AND (sm.status IS NULL OR sm.status = 1)
                   AND COALESCE(sm.active, 1) = 1
                 GROUP BY sm.spell_name
-                ORDER BY sm.spell_name,sm.active
+                ORDER BY sm.spell_name
             """, (branch_id,))
         else:
             # Query without branch filter
