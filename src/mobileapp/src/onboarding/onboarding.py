@@ -220,6 +220,171 @@ def get_employee(emp_code):
 
 
 # ══════════════════════════════════════════════════════════════════
+# New outsider registration (the "+" on the mobile onboarding screen)
+# ══════════════════════════════════════════════════════════════════
+
+# Only outsiders may be created from a phone. The series is the first three
+# characters of emp_code; anything else belongs in the web ERP, where the full
+# employee master (PF, ESI, bank, addresses) is filled in.
+OUTSIDER_SERIES = ('FOS', 'MOS')
+_CODE_DIGITS = 4
+
+# Exactly what the web ERP's employee form writes (GENDER_OPTIONS in
+# addEmployee/_components/PersonalStep.tsx). The column is free text, so a
+# second spelling from the phone would split every gender-wise HR report.
+GENDERS = ('Male', 'Female', 'Other')
+
+
+def _next_code(cursor, series, branch_id):
+    """
+    Next free code for this series: MAX+1 within the branch, then stepped
+    forward past any number another branch has already taken — numbering is
+    per branch, but emp_code is what every lookup keys on, so it must be unique.
+
+    ponytail: no series/counter table. The codes themselves are the counter, so
+    there is nothing to keep in step with HR's own inserts. Ceiling: two phones
+    registering in the same second can still compute the same number; a UNIQUE
+    index on hrms_ed_official_details.emp_code turns that into the IntegrityError
+    handled below instead of a duplicate.
+    """
+    cursor.execute(Q.NEXT_NO_IN_BRANCH, (branch_id, series))
+    row = cursor.fetchone()
+    number = int((row or {}).get('last_no') or 0)
+    while True:
+        number += 1
+        code = f"{series}{number:0{_CODE_DIGITS}d}"
+        cursor.execute(Q.CODE_EXISTS_ANYWHERE, (code,))
+        if cursor.fetchone() is None:
+            return code
+
+
+def _validated_series(raw):
+    """The series, upper-cased, or None when it is not one we may create."""
+    series = (raw or '').strip().upper()
+    return series if series in OUTSIDER_SERIES else None
+
+
+def _validated_gender(raw):
+    """Gender in the ERP's own spelling, or None if it is not one of them."""
+    value = (raw or '').strip().lower()
+    return next((g for g in GENDERS if g.lower() == value), None)
+
+
+@onboarding_bp.route('/onboarding/next-code', methods=['GET'])
+def next_code():
+    """Preview the code the next registration in this series/branch would get."""
+    series = _validated_series(request.args.get('series'))
+    branch_id = request.args.get('branch_id', type=int)
+    if not series:
+        return jsonify({'status': 'error',
+                        'message': f"series must be one of {', '.join(OUTSIDER_SERIES)}"}), 400
+    if not branch_id:
+        return jsonify({'status': 'error', 'message': 'branch_id is required'}), 400
+    db = None
+    try:
+        db = get_db()
+        cursor = db.cursor(dictionary=True)
+        code = _next_code(cursor, series, branch_id)
+        cursor.close()
+        return jsonify({'status': 'success', 'series': series, 'next_code': code})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        if db is not None:
+            db.close()
+
+
+@onboarding_bp.route('/onboarding/employee', methods=['POST'])
+def create_employee():
+    """
+    Register a new outsider from the shop floor.
+
+    Body: { series, name, gender, sub_dept_id, designation_id, branch_id, user_id }
+
+    Writes the two rows the rest of the app needs to see a person at all —
+    hrms_ed_personal_details (status JOINED, or face enrolment and attendance
+    both refuse them) and hrms_ed_official_details (emp_code, department,
+    designation, date_of_join = today). The face is NOT registered here: the
+    caller posts it to /onboarding/register-face with the emp_code returned,
+    which stores it against this eb_id like any other enrolment.
+    """
+    data = request.json or {}
+    series = _validated_series(data.get('series'))
+    name = (data.get('name') or '').strip()
+    gender = _validated_gender(data.get('gender'))
+    sub_dept_id = data.get('sub_dept_id')
+    designation_id = data.get('designation_id')
+    branch_id = data.get('branch_id')
+    user_id = data.get('user_id') or 0
+
+    if not series:
+        return jsonify({'status': 'error',
+                        'message': f"Only {' and '.join(OUTSIDER_SERIES)} employees can be "
+                                   f"registered from the app"}), 400
+    if not name:
+        return jsonify({'status': 'error', 'message': 'name is required'}), 400
+    if not gender:
+        return jsonify({'status': 'error',
+                        'message': f"gender must be one of {', '.join(GENDERS)}"}), 400
+    if not sub_dept_id or not designation_id:
+        return jsonify({'status': 'error',
+                        'message': 'sub_dept_id and designation_id are required'}), 400
+    if not branch_id:
+        return jsonify({'status': 'error', 'message': 'branch_id is required'}), 400
+
+    db = None
+    try:
+        db = get_db()
+        cursor = db.cursor(dictionary=True)
+
+        # The NOT NULL columns this form does not collect, taken from the
+        # newest employee already in this series.
+        cursor.execute(Q.SERIES_DEFAULTS, (series,))
+        defaults = cursor.fetchone() or {}
+        catagory_id = defaults.get('catagory_id') or 0
+        reporting_eb_id = defaults.get('reporting_eb_id') or 0
+        min_commitment = defaults.get('minimum_working_commitment') or 0
+
+        # Code is derived here, not trusted from the device: the number the
+        # phone previewed may have been taken since.
+        emp_code = _next_code(cursor, series, int(branch_id))
+
+        cursor.execute(Q.INSERT_PERSONAL, (name, gender, int(branch_id), user_id))
+        eb_id = cursor.lastrowid
+        cursor.execute(Q.INSERT_OFFICIAL, (
+            eb_id, emp_code, int(sub_dept_id), int(designation_id), int(branch_id),
+            catagory_id, reporting_eb_id, min_commitment, user_id
+        ))
+        db.commit()
+        cursor.close()
+
+        print(f"[onboarding.create_employee] {emp_code} -> eb_id={eb_id} "
+              f"branch={branch_id} dept={sub_dept_id} desig={designation_id}")
+        return jsonify({
+            'status': 'success',
+            'eb_id': eb_id,
+            'emp_code': emp_code,
+            'name': name,
+            'message': f'{name} registered as {emp_code}'
+        })
+    except Exception as e:
+        if db is not None:
+            # Never leave a personal row without its official row: without
+            # emp_code the person is invisible to every screen but still counts
+            # as an employee.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        if db is not None:
+            db.close()
+
+
+# ══════════════════════════════════════════════════════════════════
 # POST Register Face
 # ══════════════════════════════════════════════════════════════════
 

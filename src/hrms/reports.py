@@ -28,6 +28,7 @@ from src.hrms.reportQueries import (
     get_hands_complement_query,
     get_employee_face_query,
     get_employee_face_photo_query,
+    deactivate_employee_face_query,
 )
 
 logger = logging.getLogger(__name__)
@@ -863,13 +864,15 @@ async def get_employee_face_report(
     co_id: int | None = None,
     branch_id: int | None = None,
     active: int | None = None,
+    emp_code: str | None = None,
 ):
     """
     Employee face register (employee_face_mst) with emp_code / name /
     department resolved from hrms_ed_official_details. Embedding and photo
     columns are returned as Yes/No flags, not the blobs.
 
-    Query params: co_id (required), branch_id (optional), active (optional 0/1).
+    Query params: co_id (required), branch_id (optional), active (optional 0/1),
+    emp_code (optional EB no — used by the Delete Registration page).
     """
     try:
         if not co_id:
@@ -879,6 +882,7 @@ async def get_employee_face_report(
             "co_id": int(co_id),
             "branch_id": int(branch_id) if branch_id else None,
             "active": int(active) if active is not None else None,
+            "emp_code": emp_code.strip() if emp_code and emp_code.strip() else None,
         }).fetchall()
 
         def yn(v):
@@ -950,4 +954,43 @@ async def get_employee_face_photo(
         raise
     except Exception as e:
         logger.error(f"Error fetching employee face photo: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/employee-face/{emp_face_id}")
+async def delete_employee_face(
+    emp_face_id: int,
+    request: Request,
+    db: Session = Depends(get_tenant_db),
+    token_data: dict = Depends(get_current_user_with_refresh),
+    co_id: int | None = None,
+):
+    """
+    Delete one face registration (soft: active = 0), so the employee can be
+    re-enrolled and the phones drop the face on their next gallery pull.
+    Backs HRMS Masters > Delete Registration. Query params: co_id (required).
+    """
+    try:
+        if not co_id:
+            raise HTTPException(status_code=400, detail="co_id is required")
+
+        result = db.execute(deactivate_employee_face_query(), {
+            "emp_face_id": int(emp_face_id),
+            "co_id": int(co_id),
+            "user_id": (token_data or {}).get("user_id"),
+        })
+        if result.rowcount == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="Face registration not found or already deleted",
+            )
+        db.commit()
+        return {"message": "Face registration deleted successfully"}
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting employee face registration: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

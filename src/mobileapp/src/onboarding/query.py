@@ -58,6 +58,55 @@ INSERT_FACE = """
     VALUES (%s, %s, 1, %s, 0, NOW())
 """
 
+# ── New outsider registration (the "+" on the mobile onboarding screen) ──────
+# The series is the FIRST THREE CHARACTERS of emp_code (FOS / MOS); everything
+# after them is the number, zero-padded to 4 (FOS0367 … FOS2196).
+#
+# The digits test is not decoration: CAST('TEMP' AS UNSIGNED) is 0 in MySQL, so
+# one stray non-numeric code in the series would silently restart numbering at 1
+# and hand out a code that already exists.
+
+NEXT_NO_IN_BRANCH = """
+    SELECT COALESCE(MAX(CAST(SUBSTRING(emp_code, 4) AS UNSIGNED)), 0) AS last_no
+    FROM hrms_ed_official_details
+    WHERE branch_id = %s
+      AND LEFT(emp_code, 3) = %s
+      AND SUBSTRING(emp_code, 4) REGEXP '^[0-9]+$'
+"""
+
+# Numbering is per branch, but emp_code is what every lookup keys on, so a
+# number already used by ANY branch is skipped rather than duplicated.
+CODE_EXISTS_ANYWHERE = """
+    SELECT 1 FROM hrms_ed_official_details WHERE emp_code = %s LIMIT 1
+"""
+
+# NOT NULL columns the mobile form does not collect. Copied from the newest
+# employee of the same series, so a new outsider is categorised exactly like the
+# outsiders already in the system and no category id is hard-coded in the app.
+SERIES_DEFAULTS = """
+    SELECT catagory_id, reporting_eb_id, minimum_working_commitment
+    FROM hrms_ed_official_details
+    WHERE LEFT(emp_code, 3) = %s
+    ORDER BY eb_id DESC
+    LIMIT 1
+"""
+
+# status_id 35 = JOINED. Anything else and the worker is refused by both face
+# enrolment and attendance the moment registration finishes.
+INSERT_PERSONAL = """
+    INSERT INTO hrms_ed_personal_details
+        (first_name, gender, branch_id, active, status_id, updated_by, updated_date_time)
+    VALUES (%s, %s, %s, 1, 35, %s, NOW())
+"""
+
+INSERT_OFFICIAL = """
+    INSERT INTO hrms_ed_official_details
+        (eb_id, emp_code, sub_dept_id, designation_id, branch_id, date_of_join,
+         catagory_id, reporting_eb_id, minimum_working_commitment,
+         active, updated_by, updated_date_time)
+    VALUES (%s, %s, %s, %s, %s, CURDATE(), %s, %s, %s, 1, %s, NOW())
+"""
+
 # Same insert plus the device-computed MobileFaceNet embedding, so the new face
 # is matchable offline straight away. Only valid after offline_sync.sql.
 INSERT_FACE_WITH_MOBILE = """

@@ -796,6 +796,7 @@ def get_employee_face_query():
         :co_id (int) - required (scoped via the employee's branch)
         :branch_id (int or NULL) - optional
         :active (int or NULL) - optional employee_face_mst.active filter (0/1)
+        :emp_code (str or NULL) - optional single-employee lookup (EB no)
     """
     sql = """
     SELECT
@@ -829,6 +830,11 @@ def get_employee_face_query():
     WHERE bm.co_id = :co_id
         AND (:branch_id IS NULL OR pd.branch_id = :branch_id)
         AND (:active IS NULL OR ef.active = :active)
+        -- EXISTS, not od.emp_code: the join above takes only the latest
+        -- official-details row, so an EB no held on an older row would miss.
+        AND (:emp_code IS NULL OR EXISTS (
+                SELECT 1 FROM hrms_ed_official_details o3
+                WHERE o3.eb_id = ef.eb_id AND TRIM(o3.emp_code) = TRIM(:emp_code)))
     ORDER BY ef.updated_date_time DESC, ef.emp_face_id DESC;
     """
     return text(sql)
@@ -851,5 +857,35 @@ def get_employee_face_photo_query():
     WHERE ef.emp_face_id = :emp_face_id
         AND bm.co_id = :co_id
     LIMIT 1;
+    """
+    return text(sql)
+
+
+def deactivate_employee_face_query():
+    """
+    Delete one face registration (employee_face_mst.active = 0), scoped to the
+    company via the employee's branch. Soft, not a DELETE: the mobile gallery
+    pull tells devices to drop a face by listing deactivated ids, so a hard
+    delete would leave the face matchable on every phone that already has it.
+
+    Parameters:
+        :emp_face_id (int) - required
+        :co_id (int) - required
+        :user_id (int or NULL) - who deleted it
+    """
+    sql = """
+    UPDATE employee_face_mst AS ef
+    INNER JOIN hrms_ed_personal_details AS pd ON pd.eb_id = ef.eb_id
+    INNER JOIN branch_mst AS bm ON bm.branch_id = pd.branch_id
+    SET ef.active = 0,
+        ef.updated_by = :user_id,
+        ef.updated_date_time = NOW(),
+        -- The device delta keys off COALESCE(mobile_embed_updated,
+        -- updated_date_time); a backfilled row's old embed timestamp would
+        -- otherwise hide the removal from phones that already hold the face.
+        ef.mobile_embed_updated = NOW()
+    WHERE ef.emp_face_id = :emp_face_id
+        AND bm.co_id = :co_id
+        AND ef.active = 1;
     """
     return text(sql)
