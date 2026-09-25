@@ -18,41 +18,82 @@ from src.mobileapp.db import get_db
 permissions_bp = Blueprint("permissions", __name__)
 
 
+_FLAGS = ("can_view", "can_add", "can_modify", "can_delete", "can_print")
+
+
+def filter_menus(menus, perms):
+    """Apply role permissions to the menu list.
+
+    menus: active menu rows (menu_id, parent_id, is_group, ...).
+    perms: {menu_id: {flag: 0/1}} merged over the user's roles, or None when the
+    tenant has not configured mobile permissions yet (-> every menu, full access).
+    A menu is kept if it has can_view; a group is kept if any descendant is kept.
+    """
+    if perms is None:
+        return [{**m, **{f: 1 for f in _FLAGS}, "can_all": 1} for m in menus]
+    by_id = {m["menu_id"]: m for m in menus}
+    keep = set()
+    for mid, p in perms.items():
+        if not p.get("can_view") or mid not in by_id:
+            continue
+        # Walk up so the parent groups of a visible menu are visible too.
+        while mid is not None and mid not in keep and mid in by_id:
+            keep.add(mid)
+            mid = by_id[mid]["parent_id"]
+    out = []
+    for m in menus:
+        if m["menu_id"] not in keep:
+            continue
+        p = perms.get(m["menu_id"]) or {"can_view": 1}  # groups: view only
+        flags = {f: int(p.get(f, 0)) for f in _FLAGS}
+        out.append({**m, **flags, "can_all": int(all(flags.values()))})
+    return out
+
+
 @permissions_bp.route("/menu-permissions", methods=["GET"])
 def menu_permissions():
-    # No per-user permission filtering: every active menu is returned with full
-    # access flags. (The role/permission view is not used because its supporting
-    # tables collide with the vowerp3 ERP schema in the tenant DB.)
-    sql = """
-        SELECT  m.id            AS menu_id,
-                m.menu_key,
-                m.menu_name,
-                m.parent_id,
-                m.menu_order,
-                m.icon,
-                m.activity_class,
-                m.is_group,
-                1 AS can_view,
-                1 AS can_add,
-                1 AS can_modify,
-                1 AS can_delete,
-                1 AS can_print,
-                1 AS can_all
-        FROM    menus m
-        WHERE   m.is_active = 1
-        ORDER BY (m.parent_id IS NULL) DESC, m.parent_id, m.menu_order
-    """
+    # Permissions come from mobile_role_menu_map (set in Tenant Admin > Mobile Menu
+    # Permissions) for the user's portal roles in user_role_map. Named mobile_* because
+    # menu_mst / role_menu_map are the ERP portal tables in the same tenant DB.
+    user_id = request.args.get("user_id", type=int)
     try:
         db = get_db()
         cursor = db.cursor(dictionary=True)
-        cursor.execute(sql)
-        rows = cursor.fetchall()
+        cursor.execute("""
+            SELECT id AS menu_id, menu_key, menu_name, parent_id, menu_order,
+                   icon, activity_class, is_group
+            FROM   menus
+            WHERE  is_active = 1
+            ORDER BY (parent_id IS NULL) DESC, parent_id, menu_order
+        """)
+        menus = cursor.fetchall()
+
+        perms = None
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM information_schema.tables "
+            "WHERE table_schema = DATABASE() AND table_name = 'mobile_role_menu_map'"
+        )
+        configured = cursor.fetchone()["n"] > 0
+        if configured:
+            cursor.execute("SELECT EXISTS(SELECT 1 FROM mobile_role_menu_map) AS n")
+            configured = bool(cursor.fetchone()["n"])
+        # ponytail: an unconfigured tenant (no table / no rows) keeps the old
+        # everything-allowed behaviour so deploying this doesn't blank the app.
+        if configured:
+            cursor.execute(f"""
+                SELECT p.menu_id, {", ".join(f"MAX(p.{f}) AS {f}" for f in _FLAGS)}
+                FROM   mobile_role_menu_map p
+                JOIN   (SELECT DISTINCT role_id FROM user_role_map WHERE user_id = %s) r
+                       ON r.role_id = p.role_id
+                GROUP BY p.menu_id
+            """, (user_id or 0,))
+            perms = {r["menu_id"]: r for r in cursor.fetchall()}
         cursor.close()
         db.close()
     except Exception as e:
         return jsonify(status="error", message=str(e)), 500
 
-    return jsonify(status="success", menus=rows)
+    return jsonify(status="success", menus=filter_menus(menus, perms))
 
 
 @permissions_bp.route("/menus", methods=["GET"])

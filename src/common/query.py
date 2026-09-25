@@ -188,7 +188,12 @@ def get_roles_tenant(search: str = None):
 
 
 def get_users_tenant(search: str = None):
-    sql = f"SELECT user_id, name , email_id, active FROM user_mst LIMIT :limit OFFSET :offset"
+    sql = """
+        SELECT user_id, name , email_id, active FROM user_mst
+        WHERE (:search IS NULL OR name LIKE :search OR email_id LIKE :search)
+        ORDER BY name
+        LIMIT :limit OFFSET :offset
+    """
     query = text(sql)
     return query
 
