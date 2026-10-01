@@ -324,7 +324,8 @@ def get_employee_headcount_query():
 
 def get_spell_wise_query():
     """
-    Spell-wise hands (legacy report 559): per worked department + designation
+    Spell-wise hands (legacy report 559): per worked department (dept_mst, via the
+    worked sub-department) + designation
     and spell, hands = worked hours / 8. Long format — the frontend pivots
     spells into columns (spell names are tenant data, not fixed).
 
@@ -335,13 +336,15 @@ def get_spell_wise_query():
     """
     sql = """
     SELECT
-        sd.sub_dept_desc AS department,
+        dm.dept_code AS dept_code,
+        dm.dept_desc AS department,
         dsg.desig AS designation,
         COALESCE(sp.spell_name, da.spell) AS spell,
         ROUND(SUM(da.working_hours - COALESCE(da.idle_hours, 0)) / 8, 2) AS hands
     FROM daily_attendance AS da
     INNER JOIN branch_mst AS bm ON bm.branch_id = da.branch_id
     LEFT JOIN sub_dept_mst AS sd ON sd.sub_dept_id = da.worked_department_id
+    LEFT JOIN dept_mst AS dm ON dm.dept_id = sd.dept_id
     LEFT JOIN designation_mst AS dsg ON dsg.designation_id = da.worked_designation_id
     LEFT JOIN spell_mst AS sp ON sp.spell_id = da.spell_id
     WHERE da.attendance_date BETWEEN :date_from AND :date_to
@@ -349,8 +352,50 @@ def get_spell_wise_query():
         AND da.status_id = 3
         AND bm.co_id = :co_id
         AND (:branch_id IS NULL OR da.branch_id = :branch_id)
-    GROUP BY sd.sub_dept_desc, dsg.desig, COALESCE(sp.spell_name, da.spell)
-    ORDER BY sd.sub_dept_desc, dsg.desig, spell;
+    GROUP BY dm.dept_code, dm.dept_desc, dsg.desig, COALESCE(sp.spell_name, da.spell)
+    ORDER BY dm.dept_code, dm.dept_desc, dsg.desig, spell;
+    """
+    return text(sql)
+
+
+def get_period_attendance_register_query():
+    """
+    Period-wise attendance register (legacy "Attendance Fort Night Wise"):
+    net worked hours per worked master department + employee + date. Long
+    format — the frontend pivots dates into day columns.
+
+    Parameters:
+        :co_id (int) - required
+        :branch_id (int or NULL) - optional
+        :date_from, :date_to (str) - required range
+        :att_type (str or NULL) - daily_attendance.attendance_type (R/O/C); NULL = all
+    """
+    sql = """
+    SELECT
+        dm.dept_code AS dept_code,
+        dm.dept_desc AS department,
+        MAX(COALESCE(od.emp_code, da.eb_no, da.eb_code)) AS emp_code,
+        MAX(CONCAT_WS(' ',
+            NULLIF(TRIM(pd.first_name), ''),
+            NULLIF(TRIM(pd.middle_name), ''),
+            NULLIF(TRIM(pd.last_name), '')
+        )) AS emp_name,
+        da.attendance_date,
+        ROUND(SUM(da.working_hours - COALESCE(da.idle_hours, 0)), 2) AS hours
+    FROM daily_attendance AS da
+    INNER JOIN branch_mst AS bm ON bm.branch_id = da.branch_id
+    LEFT JOIN hrms_ed_personal_details AS pd ON pd.eb_id = da.eb_id
+    LEFT JOIN hrms_ed_official_details AS od ON od.eb_id = da.eb_id AND od.active = 1
+    LEFT JOIN sub_dept_mst AS sd ON sd.sub_dept_id = da.worked_department_id
+    LEFT JOIN dept_mst AS dm ON dm.dept_id = sd.dept_id
+    WHERE da.attendance_date BETWEEN :date_from AND :date_to
+        AND da.is_active = 1
+        AND da.status_id = 3
+        AND bm.co_id = :co_id
+        AND (:branch_id IS NULL OR da.branch_id = :branch_id)
+        AND (:att_type IS NULL OR da.attendance_type = :att_type)
+    GROUP BY dm.dept_code, dm.dept_desc, da.eb_id, da.attendance_date
+    ORDER BY dm.dept_code, emp_code, da.attendance_date;
     """
     return text(sql)
 

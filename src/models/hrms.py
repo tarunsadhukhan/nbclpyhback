@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import Integer, String, BigInteger, Date, DateTime, Float, Boolean, TIMESTAMP, DECIMAL, LargeBinary, func, Computed
 
@@ -232,6 +233,9 @@ class ElectricDetails(Base):
 	amount: Mapped[float] = mapped_column(Float, nullable=False)
 	remarks: Mapped[str | None] = mapped_column(String(255), nullable=True)
 	active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+	period_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+	unit_rate: Mapped[Decimal | None] = mapped_column(DECIMAL(6, 2), nullable=True)
+	no_of_units: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 # Canteen meals taken by an employee on a date, at an agreed rate.

@@ -158,6 +158,7 @@ from src.hrms.windingIncentive import router as hrms_winding_incentive_router
 from src.hrms.cashHands import router as hrms_cash_hands_router
 from src.hrms.canteenDetails import router as hrms_canteen_details_router
 from src.hrms.electricData import router as hrms_electric_data_router
+from src.hrms.loanTransactions import router as hrms_loan_transactions_router
 from src.common.attachments.router import router as attachments_router
 from src.config.cors import add_cors_middleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -351,6 +352,7 @@ app.include_router(hrms_atten_incentive_router, prefix="/api/hrmsMasters", tags=
 app.include_router(hrms_winding_incentive_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
 app.include_router(hrms_canteen_details_router, prefix="/api/hrms", tags=["hrms-canteen-details"])
 app.include_router(hrms_electric_data_router, prefix="/api/hrms", tags=["hrms-electric-data"])
+app.include_router(hrms_loan_transactions_router, prefix="/api/hrms", tags=["hrms-loan-transactions"])
 
 # Accounting routers
 app.include_router(accounting_router, prefix="/api/accounting", tags=["accounting"])

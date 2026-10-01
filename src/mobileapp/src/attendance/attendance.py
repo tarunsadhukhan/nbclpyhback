@@ -752,13 +752,16 @@ def attendance_report():
                      SELECT 1
                      FROM employee_face_mst ef
                      WHERE ef.eb_id = da.eb_id AND ef.active = 1
-                   ), 1, 0) AS has_photo
+                   ), 1, 0) AS has_photo,
+                   dm.order_id                   AS dept_order_id,
+                   COALESCE(s.sub_dept_code, '') AS sub_dept_code
             FROM daily_attendance da
             LEFT JOIN hrms_ed_personal_details p ON da.eb_id = p.eb_id
             LEFT JOIN hrms_ed_official_details o ON da.eb_id = o.eb_id and o.active=1
             LEFT JOIN sub_dept_mst    s ON da.worked_department_id     = s.sub_dept_id
             LEFT JOIN designation_mst d ON da.worked_designation_id = d.designation_id
             LEFT JOIN spell_mst      sm ON sm.spell_id = da.spell_id
+            LEFT JOIN dept_mst       dm ON s.dept_id = dm.dept_id
             WHERE {date_condition} AND da.is_active = 1
               -- Drop rejected (4) and cancelled (6) ATTENDANCE rows -- this is
               -- da.status_id, not the employee's. COALESCE keeps rows with a
@@ -861,11 +864,14 @@ def attendance_report():
                    8                      AS working_hours,
                    0                      AS idle_hours,
                    COALESCE(v.leave_type_description, '') AS remarks,
-                   0                      AS has_photo
+                   0                      AS has_photo,
+                   ld.order_id            AS dept_order_id,
+                   COALESCE(ms.sub_dept_code, '') AS sub_dept_code
             FROM vw_leave_dates v
             JOIN hrms_ed_official_details o ON o.eb_id = v.eb_id AND o.active = 1
             JOIN hrms_ed_personal_details p ON p.eb_id = v.eb_id
             LEFT JOIN sub_dept_mst    ms ON o.sub_dept_id    = ms.sub_dept_id
+            LEFT JOIN dept_mst        ld ON ms.dept_id       = ld.dept_id
             LEFT JOIN designation_mst md ON o.designation_id = md.designation_id
             WHERE {leave_date_condition}
               AND p.active = 1
@@ -882,7 +888,7 @@ def attendance_report():
 
         # Ordered by output alias, not da.* — with the UNION above there is no
         # single `da` to sort on.
-        sql += " ORDER BY attendance_date DESC, attendance_time DESC"
+        sql += " ORDER BY attendance_date DESC, dept_order_id, sub_dept_code, attendance_time DESC"
         print("Executing attendance report SQL:", sql)
         print("With parameters:", params)
         
@@ -923,6 +929,8 @@ def attendance_report():
                 'eb_id':            row['eb_id'],
                 'emp_name':         row['emp_name'] or '',
                 'department_name':  row['department_name'] or '',
+                'dept_order_id':    row['dept_order_id'],
+                'sub_dept_code':    row['sub_dept_code'] or '',
                 'designation_name': row['designation_name'] or '',
                 'shift_name':       row['shift_name'] or '',
                 'shift_id':         row['shift_id'],
@@ -1343,4 +1351,30 @@ def update_attendance(atten_id):
         })
     except Exception as e:
         print(f'X Update attendance error: {str(e)}')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@attendance_bp.route('/attendance/<int:atten_id>', methods=['DELETE'])
+def delete_attendance(atten_id):
+    """Soft delete: is_active = 0, as the duplicate supersede does — every
+    report already filters on it, and the row stays for audit."""
+    try:
+        db     = get_db()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(
+            "UPDATE daily_attendance SET is_active = 0, update_date_time = NOW() "
+            "WHERE daily_atten_id = %s AND is_active = 1", (atten_id,))
+        if cursor.rowcount == 0:
+            cursor.close(); db.close()
+            return jsonify({'status': 'error',
+                            'message': f'Attendance id {atten_id} not found'}), 404
+        cursor.execute(Q.DEACTIVATE_MACHINE_ATTENDANCE, (atten_id,))
+        db.commit()
+        cursor.close()
+        db.close()
+        print(f'[ATT-DELETE] id={atten_id}')
+        return jsonify({'status': 'success', 'message': 'Attendance deleted',
+                        'attendance_id': atten_id})
+    except Exception as e:
+        print(f'X Delete attendance error: {str(e)}')
         return jsonify({'status': 'error', 'message': str(e)}), 500

@@ -24,6 +24,7 @@ from src.hrms.reportQueries import (
     get_cash_attendance_query,
     get_employee_headcount_query,
     get_spell_wise_query,
+    get_period_attendance_register_query,
     get_bank_statement_query,
     get_hands_complement_query,
     get_employee_face_query,
@@ -457,6 +458,7 @@ async def get_spell_wise_report(
             m = dict(row._mapping)
             data.append({
                 "id": i,
+                "dept_code": m.get("dept_code"),
                 "department": m.get("department"),
                 "designation": m.get("designation"),
                 "spell": m.get("spell"),
@@ -469,6 +471,61 @@ async def get_spell_wise_report(
         raise
     except Exception as e:
         logger.error(f"Error fetching spell-wise report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/period-attendance-register")
+async def get_period_attendance_register_report(
+    request: Request,
+    db: Session = Depends(get_tenant_db),
+    token_data: dict = Depends(get_current_user_with_refresh),
+    co_id: int | None = None,
+    branch_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    att_type: str | None = None,
+):
+    """
+    Period-wise attendance register: net worked hours per department +
+    employee + date. Long format — the frontend pivots dates into columns.
+
+    Query params: co_id (required), date_from, date_to (required),
+    branch_id (optional), att_type (optional R/O/C; omitted = all).
+    """
+    try:
+        if not co_id:
+            raise HTTPException(status_code=400, detail="co_id is required")
+        if not date_from or not date_to:
+            raise HTTPException(status_code=400, detail="date_from and date_to are required")
+
+        rows = db.execute(get_period_attendance_register_query(), {
+            "co_id": int(co_id),
+            "branch_id": int(branch_id) if branch_id else None,
+            "date_from": date_from,
+            "date_to": date_to,
+            "att_type": att_type or None,
+        }).fetchall()
+
+        data = []
+        for i, row in enumerate(rows):
+            m = dict(row._mapping)
+            d = m.get("attendance_date")
+            data.append({
+                "id": i,
+                "dept_code": m.get("dept_code"),
+                "department": m.get("department"),
+                "emp_code": m.get("emp_code"),
+                "emp_name": m.get("emp_name"),
+                "attendance_date": d.isoformat() if hasattr(d, "isoformat") else d,
+                "hours": float(m.get("hours") or 0),
+            })
+
+        return {"data": data, "total": len(data)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching period attendance register: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

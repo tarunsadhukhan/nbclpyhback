@@ -1,17 +1,15 @@
 """
 Electric Data (electric_details) — others/electricdata.
 
-One row per employee + date: the electric amount charged to the worker.
-Same shape as Canteen Details, minus meals/rate — the amount is keyed
-directly. Rows carry their own branch_id, so the portal company/branch
+One row per employee + date: the electric amount charged to the worker,
+tagged with the pay period (pay_period.ID) it is deducted in. tran_date is
+the period's TO_DATE; amount is always no_of_units x unit_rate (server-side). Rows carry their own branch_id, so the portal company/branch
 sidebar selection drives the list (branch_mst gives the co_id) and the
 employee dropdown (reused from canteen).
 
 ponytail: plain active=1 soft-delete lifecycle; add the canteen-style
 draft/approve statuses if payroll starts consuming these rows.
 """
-
-from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
@@ -37,9 +35,13 @@ def get_electric_list_query():
             e.eb_id, o.emp_code,
             CONCAT(IFNULL(p.first_name, ''), ' ', IFNULL(p.middle_name, ''), ' ',
                    IFNULL(p.last_name, '')) AS emp_name,
-            e.amount, e.remarks, e.active
+            e.no_of_units, e.unit_rate, e.amount, e.remarks, e.active,
+            e.period_id,
+            CONCAT(DATE_FORMAT(pp.FROM_DATE, '%d-%m-%Y'), ' to ',
+                   DATE_FORMAT(pp.TO_DATE, '%d-%m-%Y')) AS period_desc
         FROM electric_details e
         INNER JOIN branch_mst bm ON bm.branch_id = e.branch_id
+        LEFT JOIN pay_period pp ON pp.ID = e.period_id
         LEFT JOIN hrms_ed_personal_details p ON p.eb_id = e.eb_id
         LEFT JOIN hrms_ed_official_details o ON o.eb_id = e.eb_id AND o.active = 1
         WHERE e.active = 1
@@ -56,7 +58,8 @@ def get_electric_list_query():
 
 def get_electric_by_id_query():
     return text("""
-        SELECT tran_id, tran_date, branch_id, eb_id, amount, remarks, active
+        SELECT tran_id, tran_date, branch_id, eb_id, period_id,
+               no_of_units, unit_rate, amount, remarks, active
         FROM electric_details
         WHERE tran_id = :record_id
     """)
@@ -73,6 +76,20 @@ def _duplicate_query():
     """)
 
 
+def get_electric_periods_query():
+    """Pay periods of the company/branch (cancelled/rejected excluded), newest first."""
+    return text("""
+        SELECT pp.ID AS id, pp.TO_DATE AS to_date,
+               CONCAT(DATE_FORMAT(pp.FROM_DATE, '%d-%m-%Y'), ' to ',
+                      DATE_FORMAT(pp.TO_DATE, '%d-%m-%Y')) AS label
+        FROM pay_period pp
+        WHERE pp.COMPANY_ID = :co_id
+          AND (:branch_id IS NULL OR pp.branch_id IS NULL OR pp.branch_id = :branch_id)
+          AND IFNULL(pp.STATUS, 0) NOT IN (4, 6)
+        ORDER BY pp.FROM_DATE DESC, pp.ID DESC
+    """)
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
 
@@ -81,15 +98,9 @@ def _branch_param(request: Request) -> int | None:
     return int(raw) if raw not in (None, "", "null") else None
 
 
-def _parse_body(body: dict) -> dict:
-    """Validate + normalise a create/edit payload into ElectricDetails columns."""
-    raw_date = str(body.get("tran_date") or "").strip()
-    if not raw_date:
-        raise HTTPException(status_code=400, detail="tran_date is required")
-    try:
-        tran_date = date.fromisoformat(raw_date[:10])
-    except ValueError:
-        raise HTTPException(status_code=400, detail="tran_date must be YYYY-MM-DD")
+def _parse_body(db: Session, body: dict) -> dict:
+    """Validate + normalise a create/edit payload into ElectricDetails columns.
+    tran_date is not keyed — it is the selected pay period's TO_DATE."""
 
     def _int(name):
         v = body.get(name)
@@ -100,21 +111,37 @@ def _parse_body(body: dict) -> dict:
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail=f"{name} must be an integer")
 
-    raw_amount = body.get("amount")
-    if raw_amount in (None, ""):
-        raise HTTPException(status_code=400, detail="amount is required")
-    try:
-        amount = float(raw_amount)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="amount must be a number")
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="amount must be greater than 0")
+    def _positive(name, cast, max_value):
+        v = body.get(name)
+        if v in (None, "", "null"):
+            raise HTTPException(status_code=400, detail=f"{name} is required")
+        try:
+            n = cast(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{name} must be a number")
+        if n <= 0 or n > max_value:
+            raise HTTPException(status_code=400, detail=f"{name} must be > 0 and <= {max_value}")
+        return n
+
+    no_of_units = _positive("no_of_units", int, 2_147_483_647)
+    unit_rate = _positive("unit_rate", lambda x: round(float(x), 2), 9999.99)  # decimal(6,2)
+
+    period_id = _int("period_id")
+    tran_date = db.execute(
+        text("SELECT TO_DATE FROM pay_period WHERE ID = :id"), {"id": period_id}
+    ).scalar()
+    if tran_date is None:
+        raise HTTPException(status_code=400, detail="Pay period not found or has no to-date")
 
     return {
         "branch_id": _int("branch_id"),
         "tran_date": tran_date,
         "eb_id": _int("eb_id"),
-        "amount": amount,
+        "period_id": period_id,
+        "no_of_units": no_of_units,
+        "unit_rate": unit_rate,
+        # Never trusted from the client — always units x rate.
+        "amount": round(no_of_units * unit_rate, 2),
         "remarks": (str(body.get("remarks") or "").strip()[:255] or None),
     }
 
@@ -128,7 +155,7 @@ def _assert_not_duplicate(db: Session, values: dict, record_id: int | None) -> N
     if dup and dup.cnt > 0:
         raise HTTPException(
             status_code=400,
-            detail="This worker already has an electric entry for this date — edit it instead",
+            detail="This worker already has an electric entry for this pay period — edit it instead",
         )
 
 
@@ -142,15 +169,15 @@ def electric_setup(
     db: Session = Depends(get_tenant_db),
     token_data: dict = Depends(get_current_user_with_refresh),
 ):
-    """Dropdown options: employees of the selected company/branch."""
+    """Dropdown options: employees and pay periods of the selected company/branch."""
     try:
         co_id = request.query_params.get("co_id")
         if not co_id:
             raise HTTPException(status_code=400, detail="co_id is required")
 
-        employees = db.execute(get_canteen_employees_query(), {
-            "co_id": int(co_id), "branch_id": _branch_param(request),
-        }).fetchall()
+        scope = {"co_id": int(co_id), "branch_id": _branch_param(request)}
+        employees = db.execute(get_canteen_employees_query(), scope).fetchall()
+        periods = db.execute(get_electric_periods_query(), scope).fetchall()
 
         return {
             "data": {
@@ -160,6 +187,11 @@ def electric_setup(
                         "label": f"{m['emp_code'] or m['eb_id']} - {(m['full_name'] or '').strip()}",
                     }
                     for m in (dict(r._mapping) for r in employees)
+                ],
+                "periods": [
+                    {"value": str(r.id), "label": r.label,
+                     "to_date": r.to_date.isoformat() if r.to_date else None}
+                    for r in periods
                 ],
             }
         }
@@ -197,6 +229,8 @@ def get_electric_table(
         for row in rows:
             m = dict(row._mapping)
             m["emp_name"] = (m.get("emp_name") or "").strip()
+            if m.get("unit_rate") is not None:
+                m["unit_rate"] = float(m["unit_rate"])
             all_data.append(m)
 
         # ponytail: in-memory pagination like the sibling pages; SQL LIMIT if it grows
@@ -226,7 +260,10 @@ def get_electric_by_id(
         row = db.execute(get_electric_by_id_query(), {"record_id": record_id}).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Electric entry not found")
-        return {"data": dict(row._mapping)}
+        data = dict(row._mapping)
+        if data.get("unit_rate") is not None:
+            data["unit_rate"] = float(data["unit_rate"])
+        return {"data": data}
     except HTTPException:
         raise
     except Exception as e:
@@ -241,7 +278,7 @@ def electric_create(
     token_data: dict = Depends(get_current_user_with_refresh),
 ):
     try:
-        values = _parse_body(parse_json_body(request))
+        values = _parse_body(db, parse_json_body(request))
         _assert_not_duplicate(db, values, None)
 
         record = ElectricDetails(**values, active=1)
@@ -268,7 +305,7 @@ def electric_edit(
     token_data: dict = Depends(get_current_user_with_refresh),
 ):
     try:
-        values = _parse_body(parse_json_body(request))
+        values = _parse_body(db, parse_json_body(request))
         existing = db.query(ElectricDetails).filter(
             ElectricDetails.tran_id == record_id,
         ).first()
