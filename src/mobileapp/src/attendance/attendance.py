@@ -124,18 +124,37 @@ def _leave_payable(cursor, eb_id, att_date):
 def _leave_conflict(cursor, eb_id, att_date, att_type):
     """Error message if attendance collides with a leave on att_date, else None.
 
-    payable='Y' (paid leave): the day is already paid — only Cash/OT allowed,
-    a Regular mark would double-pay it. Otherwise (unpaid leave): nothing
-    may be saved."""
+    Work on a leave day is never Regular. Paid leave allows Cash or OT;
+    unpaid leave allows OT only."""
     payable = _leave_payable(cursor, eb_id, att_date)
     if payable is None:
         return None
-    if payable == 'Y':
-        if str(att_type or 'R').strip().upper() == 'R':
-            return ("Employee is on paid leave on this date — only Cash or "
-                    "Over Time attendance is allowed, not Regular")
-        return None
-    return "Employee is on leave on this date — attendance cannot be saved"
+    t = str(att_type or 'R').strip().upper()
+    if payable != 'Y' and t != 'O':
+        return ("Employee is on unpaid leave on this date — only Over Time "
+                "attendance is allowed")
+    if t == 'R':
+        return ("Employee is on leave on this date — only Cash or "
+                "Over Time attendance is allowed, not Regular")
+    return None
+
+
+def _synced_att_type(cursor, eb_id, att_date, spell_id, att_type):
+    """A punch queued offline was typed without the day in view, so on sync
+    apply the entry form's rule: on leave, or already marked in another spell
+    that day -> OT. Cash stays Cash except on unpaid leave; a same-spell row
+    is a duplicate, not OT."""
+    t = str(att_type or 'R').strip().upper()
+    payable = _leave_payable(cursor, eb_id, att_date)
+    if payable is not None and (t == 'R' or payable != 'Y'):
+        return 'O'
+    if t != 'R':
+        return att_type
+    cursor.execute(
+        "SELECT 1 FROM daily_attendance WHERE eb_id = %s AND attendance_date = %s "
+        "AND is_active = 1 AND NOT (spell_id <=> %s) LIMIT 1",
+        (eb_id, att_date, spell_id))
+    return 'O' if cursor.fetchone() else att_type
 
 
 def _spell_hours_conflict(cursor, eb_id, att_date, spell_id, spell_cap,
@@ -491,6 +510,9 @@ def mark_attendance_manual():
             cursor.execute("SELECT working_hours FROM spell_mst WHERE spell_id = %s", (shift_id,))
             spell_row = cursor.fetchone()
             spell_cap = spell_row['working_hours'] if spell_row else None
+
+        if data.get('offline_queued'):
+            att_type = _synced_att_type(cursor, eb_id, att_date, shift_id, att_type)
 
         print(f"[MANUAL-ATT] eb_id={eb_id} emp_code={emp_code} src={att_source} att_type={att_type} "
               f"date={att_date} dept={department_id} shift={shift_id} desig={designation_id} "

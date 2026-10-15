@@ -543,6 +543,8 @@ def register_face():
                             mobile_model_ver or MOBILE_MODEL_VER))
         else:
             cursor.execute(Q.INSERT_FACE, (eb_id, face_embedding_json, shrunk_b64))
+        # The app caches its template under this id (OnBoardingRegisterResponse.faceId).
+        face_id = cursor.lastrowid
         db.commit()
 
         new_face_count = face_count + 1
@@ -561,7 +563,8 @@ def register_face():
             'status': 'success',
             'message': f'Face registered successfully for {employee["name"].strip()} ({emp_code}) - {new_face_count}/3',
             'face_count': new_face_count,
-            'can_register': new_face_count < 3
+            'can_register': new_face_count < 3,
+            'face_id': face_id
         })
     except Exception as e:
         print(f"[onboarding] register_face 500: {e}")

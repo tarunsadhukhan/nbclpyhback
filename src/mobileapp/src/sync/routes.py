@@ -19,7 +19,7 @@ import json
 import os
 from datetime import datetime, timedelta
 
-from flask import jsonify, request
+from flask import jsonify, request, send_from_directory
 
 from src.mobileapp.db import get_db
 from src.mobileapp.src.sync import sync_bp
@@ -247,6 +247,23 @@ def sync_time():
         'min_app_version': cfg.get('min_app_version', '1.0'),
         'config': cfg,
     })
+
+
+# ── GET /sync/apk/<file> ────────────────────────────────────────────────────
+# In-app updates: the app reads version-<flavor>.json on every open and, when
+# its versionCode is higher, downloads the APK named in it. The release build
+# publishes both files into this folder (APK first, JSON last).
+
+def _apk_dir():
+    return os.environ.get('APK_DIR') or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))), 'apk')
+
+
+@sync_bp.route('/apk/<path:name>', methods=['GET'])
+def sync_apk(name):
+    # send_from_directory refuses paths that escape the folder.
+    return send_from_directory(_apk_dir(), name, max_age=0)
 
 
 @sync_bp.route('/config', methods=['GET'])
