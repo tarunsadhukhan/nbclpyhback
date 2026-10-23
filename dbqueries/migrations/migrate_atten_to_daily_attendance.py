@@ -14,7 +14,7 @@ daily wages process) for the range and insert the legacy rows.
 Mapping (verified against the manually entered Sep 1-12 rows): emp_code -> hrms_ed_official_details,
 WShift A/B/C -> spell_id 109/110/108, dept_code -> mirrored sub_dept_mst, ocp_code -> designation by
 (department, normalised name) with the existing rows' mapping taking precedence, mch1/mch2 ->
-machine_mst.mech_code. DUTY -> type R / mark P / status 3 (approved); VOUCHER rows are skipped.
+machine_mst.mech_code. working_hours = Work_HR + GatePass_HR, idle_hours = GatePass_HR. DUTY -> type R / mark P / status 3 (approved); VOUCHER rows are skipped.
 """
 
 import collections
@@ -103,7 +103,8 @@ def main() -> None:
             if des is None:
                 skipped["no designation for ocp " + ocp] += 1
         t = (wtime or "00:00:00").strip()
-        rows.append((lid, emp[e], wdate, SPELL[shift], float(shr or 0), subdept[dpt], des, float(whr or 0),
+        # working_hours is gross (Work_HR + GatePass_HR); idle_hours = GatePass_HR, so net = working - idle
+        rows.append((lid, emp[e], wdate, SPELL[shift], float(shr or 0), subdept[dpt], des, float(whr or 0) + float(gp or 0),
                      float(gp or 0), f"{wdate} {t}"))
         for m in {m1.strip(), m2.strip()}:
             if m in mach:
@@ -136,6 +137,7 @@ def main() -> None:
     my.commit()
 
     try:
+        print("deleting old rows", flush=True)
         cur.execute("DELETE FROM daily_ebmc_attendance WHERE daily_atten_id IN (SELECT daily_atten_id FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s)", (branch, d0, d1))
         cur.execute("DELETE FROM pay_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
         cur.execute("DELETE FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
@@ -148,13 +150,16 @@ def main() -> None:
               VALUES (%s,%s,%s,'M','R','P',1,%s,%s,%s,%s,%s,'3',%s,%s,%s,%s,%s)""",
                         [(f"L{r[0]}", r[1], r[2], branch, r[3], r[4], r[5], r[6], r[7], r[8], r[9], now, now)
                          for r in rows])
-        cur.execute("CREATE TEMPORARY TABLE _mc (atten_id INT, mc_id BIGINT)")
-        cur.executemany("INSERT INTO _mc VALUES (%s,%s)", ebmc)
+        print("inserted daily_attendance, linking machines", flush=True)
+        # indexed 'L<id>' key: the join then probes _mc per range row instead of scanning daily_attendance per machine
+        cur.execute("CREATE TEMPORARY TABLE _mc (k VARCHAR(20), mc_id BIGINT, KEY (k))")
+        cur.executemany("INSERT INTO _mc VALUES (%s,%s)", [(f"L{a}", m) for a, m in ebmc])
         cur.execute("""INSERT INTO daily_ebmc_attendance
               (daily_atten_id, eb_id, mc_id, branch_id, spell_id, attendace_date, designation_id, is_active, updated_date_time)
               SELECT d.daily_atten_id, d.eb_id, t.mc_id, d.branch_id, d.spell_id, d.attendance_date,
                      d.worked_designation_id, 1, NOW()
-              FROM _mc t JOIN daily_attendance d ON d.eb_no = CONCAT('L', t.atten_id) AND d.branch_id=%s""", (branch,))
+              FROM daily_attendance d JOIN _mc t ON t.k = d.eb_no
+              WHERE d.branch_id=%s AND d.attendance_date BETWEEN %s AND %s""", (branch, d0, d1))
         cur.execute("UPDATE daily_attendance SET eb_no=NULL WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s "
                     "AND eb_no LIKE 'L%%'", (branch, d0, d1))
         cur.execute("SELECT COUNT(*) FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))

@@ -10,8 +10,8 @@ in display order, so one generic page (ReportPanel, scroll mode) can show and ex
 
 Legacy -> tenant mapping: ATTEN = daily_attendance (approved, active); WShift = spell_mst.spell_code;
 MainShift = shift_mst.shift_name; work type DUTY / OT = attendance_type R / O; Shift_HR = spell_hours;
-GatePass_HR = idle_hours; Work_HR = working_hours (already net of the gate pass: every row with idle
-hours has working_hours = spell_hours - idle_hours); Night_HR = 0.5 for a full night (C)
+GatePass_HR = idle_hours; Work_HR = working_hours - idle_hours (working_hours is gross, i.e. legacy
+Work_HR + GatePass_HR); Night_HR = 0.5 for a full night (C)
 spell; dept / occupation = worked department / designation; EGroup = category_mst.cata_desc.
 
 ponytail: the tenant keeps no Grade (MILL-WORKMEN / OUTSIDER / CONTRACTOR) on attendance, so every
@@ -60,7 +60,7 @@ def _attendance(db: Session, branch_id: int, f: date, t: date, *, shift: str = "
                CASE da.attendance_type WHEN 'R' THEN 'DUTY' WHEN 'O' THEN 'OT'
                     ELSE IFNULL(da.attendance_type, '') END AS work_type,
                IFNULL(da.spell_hours, 0) AS shift_hr, IFNULL(da.idle_hours, 0) AS gp_hr,
-               IFNULL(da.working_hours, 0) AS work_hr,
+               IFNULL(da.working_hours, 0) - IFNULL(da.idle_hours, 0) AS work_hr,
                IFNULL(da.attendance_source, '') AS source, da.entry_time,
                IFNULL(cm.cata_desc, '') AS egroup, da.eb_id, da.device_id, da.created_by, da.daily_atten_id
         FROM daily_attendance da

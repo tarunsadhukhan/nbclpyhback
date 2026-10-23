@@ -182,7 +182,12 @@ def get_roles_ctrldsk_menu_by_roleid(role_id: int):
 
 
 def get_roles_tenant(search: str = None):
-    sql = f"SELECT role_id, role_name, active FROM roles_mst LIMIT :limit OFFSET :offset"
+    sql = """
+        SELECT role_id, role_name, active FROM roles_mst
+        WHERE (:search IS NULL OR role_name LIKE :search)
+        ORDER BY role_name
+        LIMIT :limit OFFSET :offset
+    """
     query = text(sql)
     return query
 

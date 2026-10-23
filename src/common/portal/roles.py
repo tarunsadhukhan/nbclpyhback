@@ -40,7 +40,12 @@ def get_roles(
         # Create query with org_id
         query = get_roles_tenant(search)
         print(f"Executing query for search: {search}")
-        roles = tenant_session.execute(query, {"limit": limit, "offset": offset, "search": f"%{search}%" if search else None}).fetchall()
+        search_param = f"%{search}%" if search else None
+        roles = tenant_session.execute(query, {"limit": limit, "offset": offset, "search": search_param}).fetchall()
+        total = tenant_session.execute(
+            text("SELECT COUNT(*) FROM roles_mst WHERE (:search IS NULL OR role_name LIKE :search)"),
+            {"search": search_param},
+        ).scalar()
         # roles = result.fetchall()
         print(f"Query returned {len(roles) if roles else 0} results")
     except Exception as query_error:
@@ -50,7 +55,6 @@ def get_roles(
     try: 
         roles = [dict(r._mapping) for r in roles]
         print(f"Converted {len(roles)} rows to dictionaries")
-        total = len(roles)
     except Exception as conversion_error:
         print(f"Data conversion error: {conversion_error}")
         raise HTTPException(status_code=500, detail=f"Data conversion error: {str(conversion_error)}")

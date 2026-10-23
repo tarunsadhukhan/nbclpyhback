@@ -16,8 +16,9 @@ pay_period, ATTEN = pay_attendance (att_type R = DUTY, O = OT).
 
 ponytail: only periods from 16/11/2025 (the legacy monthly-PF era) are supported; the
 pre-2025 PF/ESI/Atten branches are not ported. Not ported yet (source tables missing or
-unmapped): step 3 _GetOthAmt (VBasic / production incentive), electricity recovery, STL / adjustment hours (PayM_AdjHR / PayM_AdjArrear), step 5 _Cumm
-(balances / YTD) and SP_GenInterest. Salary (S) processing is a separate screen.
+unmapped): step 3 _GetOthAmt (VBasic / production incentive), STL (PayOSTL /
+PayJOLeave), step 5 _Cumm (balances / YTD) and SP_GenInterest. Occupation-wise basic / MiscEarn / Oil
+use the legacy OcpCode of a designation: designation_mst.occu_code. Salary (S) processing is a separate screen.
 Process rows are tagged paywages.PCName = PROCESS_TAG so re-runs replace only their own
 rows; a period that holds migrated (untagged) paid rows is refused (409).
 """
@@ -47,11 +48,12 @@ UNIT_CODE = "01"
 MIN_FROM_DATE = date(2025, 11, 16)
 # HRA %: legacy PayOWagesRate.HRA_Rate (7.50 for every NJB worker); worker_rate_mst has no column.
 HRA_PCT = 7.5
-# Legacy PayOMiscRate 'PTAX' slabs, Location FACTORY (effective 2021-01-01): (from, to, tax).
-PTAX_SLABS = ((1, 10000, 0), (10000.01, 15000, 110), (15000.01, 25000, 130),
-              (25000.01, 40000, 150), (40000.01, 500000, 200))
 # Night-shift spells whose Night_HR counts as NS_HR (legacy WShift IN ('C','C2','G3')).
 NIGHT_SPELLS = ("C", "C2", "G3")
+# Legacy _Daily per-hour allowances by occupation (DUTY rows): (column, OcpCodes, rate, + Night_HR).
+OCP_ALLOWANCES = (("MiscEarn", ("0316", "0334"), 1.25, False), ("MiscEarn", ("0322", "0323", "0335"), 0.78125, False),
+                  ("MiscEarn", ("1705",), 0.240385, False), ("Oil_Amt", ("3001", "3201"), 1, True),
+                  ("Oil_Amt", ("3004", "3203"), 0.375, True))
 # hrms_* tables are utf8mb4_0900_ai_ci, the legacy paywages table utf8mb4_unicode_ci.
 UCI = "COLLATE utf8mb4_unicode_ci"
 
@@ -93,8 +95,20 @@ def _json_rows(result) -> list[dict]:
     return out
 
 
-def _ptax(gross: float) -> int:
-    for lo, hi, tax in PTAX_SLABS:
+def _ptax_slabs(db: Session, loc: str, from_date: date) -> list[tuple[float, float, float]]:
+    """PayOMiscRate 'PTAX' slabs (FRate, SRate, FRate_HR = tax) of the latest EffDate on or before
+    the period start, for the location — as legacy SP_WagesProcessing_GetRate."""
+    rows = db.execute(text("""
+        SELECT FRate, SRate, FRate_HR FROM PayOMiscRate
+        WHERE All_Type = 'PTAX' AND Location = :l
+          AND EffDate = (SELECT MAX(EffDate) FROM PayOMiscRate
+                         WHERE All_Type = 'PTAX' AND Location = :l AND EffDate <= :f)
+    """), {"l": loc, "f": from_date}).fetchall()
+    return [(float(r.FRate), float(r.SRate), float(r.FRate_HR)) for r in rows]
+
+
+def _ptax(gross: float, slabs: list[tuple[float, float, float]]) -> float:
+    for lo, hi, tax in slabs:
         if lo <= gross <= hi:
             return tax
     return 0
@@ -343,17 +357,25 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
              shift_hr, working_hrs, idle_hrs, ns_hrs, FBasic_Amt, VBasic_Amt, DA_Amt, NS_Amt, OT_Amt,
              BeamChange_Amt, Incentive_Amt, MiscEarn, Oil_Amt, HRA_Amt, HeadCount, Reason, updated_by,
              updated_date_time)
-        SELECT d.attendance_date, d.spell_id, d.eb_id, d.worked_department_id, d.worked_designation_id,
-               (SELECT GROUP_CONCAT(m.mech_code ORDER BY m.mech_code) FROM daily_ebmc_attendance e
-                JOIN machine_mst m ON m.machine_id = e.mc_id WHERE e.daily_atten_id = d.daily_atten_id AND e.is_active = 1),
-               d.attendance_type, d.branch_id, 1, IFNULL(d.spell_hours, 0), IFNULL(d.working_hours, 0),
-               IFNULL(d.idle_hours, 0),
-               -- night allowance: half an hour for a full night-spell shift (matches the loaded August rows)
-               IF(sp.spell_code IN ('C', 'C2', 'G3') AND d.working_hours > 0 AND d.spell_hours > 0,
-                  ROUND(0.5 * d.working_hours / d.spell_hours, 3), 0),
+        SELECT d.attendance_date, d.spell_id, d.eb_id, d.worked_department_id, d.worked_designation_id, mc.codes,
+               d.attendance_type, d.branch_id, 1, IFNULL(d.spell_hours, 0),
+               -- working_hours is gross (Work_HR + GP_HR); pay_attendance keeps the legacy net Work_HR
+               IFNULL(d.working_hours, 0) - IFNULL(d.idle_hours, 0), IFNULL(d.idle_hours, 0),
+               -- night allowance: half an hour per full 7.5-hour night shift, pro rata (legacy Atten.Night_HR:
+               -- 7.5 -> 0.50, 7 -> 0.47, 8 -> 0.53 whatever the shift's own hours)
+               IF(sp.spell_code IN ('C', 'C2', 'G3') AND d.working_hours - IFNULL(d.idle_hours, 0) > 0,
+                  ROUND(0.5 * (d.working_hours - IFNULL(d.idle_hours, 0)) / 7.5, 2), 0),
                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-               IF(d.spell_hours > 0, ROUND(d.working_hours / d.spell_hours, 2), 0), '', :uid, NOW()
+               IF(d.spell_hours > 0, ROUND((d.working_hours - IFNULL(d.idle_hours, 0)) / d.spell_hours, 2), 0), '', :uid, NOW()
         FROM daily_attendance d LEFT JOIN spell_mst sp ON sp.spell_id = d.spell_id
+        -- machines aggregated once for the period (a per-row subquery here ran ~3 min: MySQL scanned
+        -- daily_ebmc_attendance for every row); machine rows are found through their parent
+        LEFT JOIN (SELECT e.daily_atten_id, GROUP_CONCAT(m.mech_code ORDER BY m.mech_code) codes
+                   FROM daily_ebmc_attendance e
+                   JOIN daily_attendance p ON p.daily_atten_id = e.daily_atten_id AND p.branch_id = :b
+                        AND p.attendance_date BETWEEN :f AND :t
+                   JOIN machine_mst m ON m.machine_id = e.mc_id
+                   WHERE e.is_active = 1 GROUP BY e.daily_atten_id) mc ON mc.daily_atten_id = d.daily_atten_id
         WHERE d.branch_id = :b AND d.attendance_date BETWEEN :f AND :t AND d.is_active = 1
           AND d.attendance_type IN ('R', 'O') AND CAST(d.status_id AS UNSIGNED) = 3
     """), {**k, "uid": int(user) if str(user).isdigit() else 0})
@@ -376,9 +398,35 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
                a.OT_Amt = 0, a.BeamChange_Amt = 0, a.MiscEarn = 0, a.Oil_Amt = 0, a.HRA_Amt = 0
         WHERE {ATT}
     """), k)  # Incentive_Amt is owned by the incentive screens — not reset (legacy comments it out)
+    # legacy OcpCode per designation (designation_mst.occu_code) + its PayOWagesRate_OCP rate, latest
+    # EFFDate on or before the period start
+    db.execute(text("DROP TEMPORARY TABLE IF EXISTS _wp_ocp"))
     db.execute(text(f"""
-        UPDATE pay_attendance a JOIN _wp_rate r ON r.eb_id = a.eb_id
-        SET a.FBasic_Amt = ROUND(r.fbasic / r.fbasic_hr * a.working_hrs, 2)
+        CREATE TEMPORARY TABLE _wp_ocp (PRIMARY KEY (designation_id)) AS
+        SELECT dm.designation_id, dm.occu_code {UCI} ocp,
+               (SELECT r.Rate FROM PayOWagesRate_OCP r WHERE r.OcpCode = dm.occu_code {UCI} AND r.EFFDate <= :f
+                ORDER BY r.EFFDate DESC LIMIT 1) rate
+        FROM designation_mst dm WHERE dm.occu_code <> ''
+    """), k)
+    # FBasic (legacy #PayOWagesRate): the employee's PayOWagesRate row with the latest EffDate on or
+    # before the cut-off. Rows of a worker without one keep FBasic_Amt = 0, as in legacy.
+    db.execute(text("DROP TEMPORARY TABLE IF EXISTS _wp_fbasic"))
+    db.execute(text("""
+        CREATE TEMPORARY TABLE _wp_fbasic (PRIMARY KEY (eb_id)) AS
+        SELECT p.eb_id, MAX(p.FBasic) fbasic, MAX(p.FBasic_HR) fbasic_hr FROM PayOWagesRate p
+        JOIN (SELECT eb_id, MAX(EffDate) me FROM PayOWagesRate WHERE EffDate <= :cut AND eb_id IS NOT NULL
+              GROUP BY eb_id) m ON m.eb_id = p.eb_id AND m.me = p.EffDate
+        GROUP BY p.eb_id
+    """), k)
+    # Occupation rate when the worked occupation has one, else the employee's FBasic — groups 02 / 03
+    # (piece-rated) only: staff FBasic_HR is monthly, so an occupation rate over it would be nonsense.
+    db.execute(text(f"""
+        UPDATE pay_attendance a JOIN _wp_fbasic r ON r.eb_id = a.eb_id
+        LEFT JOIN _wp_ocp q ON q.designation_id = a.desig_id
+        LEFT JOIN hrms_ed_official_details o ON o.eb_id = a.eb_id AND o.active = 1
+        LEFT JOIN category_mst g ON g.cata_id = o.catagory_id
+        SET a.FBasic_Amt = ROUND(IF(LEFT(g.cata_desc, 2) IN ('02', '03'), IFNULL(q.rate, r.fbasic), r.fbasic)
+                                 / r.fbasic_hr * a.working_hrs, 2)
         WHERE {ATT} AND a.att_type IN ('R', 'O') AND r.fbasic_hr > 0
     """), k)
     db.execute(text(f"""
@@ -404,6 +452,14 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
         SET a.BeamChange_Amt = ROUND(0.35 * a.working_hrs, 2)
         WHERE {ATT} AND a.att_type = 'R' AND d.dept_code = '07' AND LEFT(g.cata_desc, 2) = '07'
     """), k)  # 07 = beaming dept & group
+    for col, codes, rate, night in OCP_ALLOWANCES:
+        db.execute(text(f"""
+            UPDATE pay_attendance a JOIN _wp_ocp q ON q.designation_id = a.desig_id
+            JOIN sub_dept_mst s ON s.sub_dept_id = a.dept_id JOIN dept_mst d ON d.dept_id = s.dept_id
+            SET a.{col} = ROUND({rate} * (a.working_hrs{" + a.ns_hrs" if night else ""}), 2)
+            WHERE {ATT} AND a.att_type = 'R' AND q.ocp IN ({", ".join(repr(c) for c in codes)})
+              AND d.dept_code {UCI} = LEFT(q.ocp, 2)
+        """), k)
 
     # ── 2 _GetAtten: one paywages row per employee ────────────────────────
     db.execute(text(f"DELETE w FROM paywages w WHERE {W}"), k)
@@ -414,12 +470,21 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
                MAX(CASE WHEN a.att_type = 'R' THEN d.dept_code END) dept_code,
                SUM(CASE WHEN a.att_type = 'R' THEN a.working_hrs ELSE 0 END) work_hr,
                SUM(CASE WHEN a.att_type = 'O' THEN a.working_hrs ELSE 0 END) ot_hr,
+               SUM(CASE WHEN a.att_type = 'R' THEN a.idle_hrs ELSE 0 END) gp_hr,
                SUM(CASE WHEN a.att_type = 'R' AND sp.spell_code IN ('C', 'C2', 'G3') THEN a.ns_hrs ELSE 0 END) ns_hr
         FROM pay_attendance a
         LEFT JOIN sub_dept_mst s ON s.sub_dept_id = a.dept_id LEFT JOIN dept_mst d ON d.dept_id = s.dept_id
         LEFT JOIN spell_mst sp ON sp.spell_id = a.spell_id
         WHERE {ATT} AND a.att_type IN ('R', 'O')
         GROUP BY a.eb_id HAVING SUM(a.working_hrs) > 0
+    """), k)
+    # manual hour / basic / DA adjustments of the fortnight (legacy PayM_AdjHR, keyed by eb_id here)
+    db.execute(text("DROP TEMPORARY TABLE IF EXISTS _wp_adj"))
+    db.execute(text("""
+        CREATE TEMPORARY TABLE _wp_adj (PRIMARY KEY (eb_id)) AS
+        SELECT eb_id, SUM(Adj_HR) hr, SUM(Adj_BSAmt) bs, SUM(Adj_DAAmt) da,
+               CONCAT('/', MAX(DeptCode), '/', MAX(WShift)) ods
+        FROM PayM_AdjHR WHERE FNEDate = :t AND eb_id IS NOT NULL GROUP BY eb_id
     """), k)
     db.execute(text("DROP TEMPORARY TABLE IF EXISTS _wp_hol"))
     db.execute(text("""
@@ -436,7 +501,7 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
         "EName": "TRIM(CONCAT(IFNULL(pe.first_name, ''), ' ', IFNULL(pe.middle_name, ''), ' ', IFNULL(pe.last_name, '')))",
         "Grade": "'MILL-WORKMEN'", "EGroup": "IFNULL(g.cata_desc, '')", "DoB": "IFNULL(pe.date_of_birth, '1900-01-01')",
         "DoJ": "IFNULL(o.date_of_join, '1900-01-01')", "Active": "'Y'", "RestDay": "IFNULL(o.off_day, '')", "PaySlipType": "'WAGES'",
-        "Work_HR": "IFNULL(x.work_hr, 0)", "Holiday_HR": "IFNULL(h.hol_hr, 0)", "NS_HR": "IFNULL(x.ns_hr, 0)",
+        "Work_HR": "IFNULL(x.work_hr, 0) + IFNULL(j.hr, 0)", "GP_HR": "IFNULL(x.gp_hr, 0)", "Holiday_HR": "IFNULL(h.hol_hr, 0)", "NS_HR": "IFNULL(x.ns_hr, 0)",
         "OT_HR": "IFNULL(x.ot_hr, 0)", "OFBasic_HR": "IFNULL(r.fbasic_hr, 208)", "ODA_HR": "IFNULL(r.fbasic_hr, 208)",
         "ODA_All": "IFNULL(r.da_all, 'N')", "OHRA_All": "IFNULL(r.hra, 'N')", "OPF": "IFNULL(r.pf, 'N')",
         "OESI": "IFNULL(r.esi, 'N')", "OPTax": "IFNULL(r.ptax, 'N')", "OQuarter": "IFNULL(r.quarter, 'N')",
@@ -458,21 +523,23 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
         FROM hrms_ed_official_details o
         LEFT JOIN _wp_att x ON x.eb_id = o.eb_id
         LEFT JOIN _wp_hol h ON h.eb_id = o.eb_id
+        LEFT JOIN _wp_adj j ON j.eb_id = o.eb_id
         LEFT JOIN _wp_rate r ON r.eb_id = o.eb_id
         LEFT JOIN hrms_ed_personal_details pe ON pe.eb_id = o.eb_id
         LEFT JOIN category_mst g ON g.cata_id = o.catagory_id
         LEFT JOIN hrms_ed_bank_details b ON b.eb_id = o.eb_id AND b.active = 1
         WHERE o.active = 1 AND o.branch_id = :b AND o.emp_code IS NOT NULL AND o.emp_code <> ''
-          AND (x.eb_id IS NOT NULL OR (h.eb_id IS NOT NULL AND h.hol_hr > 0))
+          AND (x.eb_id IS NOT NULL OR j.eb_id IS NOT NULL OR (h.eb_id IS NOT NULL AND h.hol_hr > 0))
     """), k)
 
-    # Work_Day (legacy: from 16/02/2026, per (spell, shift hours) of DUTY rows)
+    # Work_Day (legacy: from 16/02/2026, per (spell, shift hours) of DUTY rows, plus Adj_HR — sic, hours)
     db.execute(text(f"""
         UPDATE paywages w JOIN hrms_ed_official_details o ON o.emp_code {UCI} = w.ECode AND o.branch_id = :b
-        JOIN (SELECT eb_id, ROUND(SUM((working_hrs + ns_hrs) / shift_hr), 2) wd
+        JOIN (SELECT eb_id, SUM((working_hrs + ns_hrs) / shift_hr) wd
               FROM pay_attendance a WHERE {ATT} AND a.att_type = 'R' AND a.working_hrs > 0 AND a.shift_hr > 0
               GROUP BY eb_id) q ON q.eb_id = o.eb_id
-        SET w.Work_Day = q.wd WHERE {W}
+        LEFT JOIN _wp_adj j ON j.eb_id = o.eb_id
+        SET w.Work_Day = ROUND(q.wd + IFNULL(j.hr, 0), 2) WHERE {W}
     """), k)
 
     # ── 4 _GetRate ────────────────────────────────────────────────────────
@@ -491,6 +558,11 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
               WHERE {ATT} AND a.att_type = 'R' AND a.working_hrs > 0 GROUP BY a.eb_id) q ON q.eb_id = o.eb_id
         SET w.OcpDptSft = q.ods WHERE {W}
     """), k)
+    db.execute(text(f"""
+        UPDATE paywages w JOIN hrms_ed_official_details o ON o.emp_code {UCI} = w.ECode AND o.branch_id = :b
+        JOIN _wp_adj j ON j.eb_id = o.eb_id
+        SET w.OcpDptSft = j.ods WHERE {W} AND w.OcpDptSft = '/  /' AND j.hr > 0
+    """), k)
 
     # Earnings from the daily amounts (DUTY rows only)
     db.execute(text(f"""
@@ -502,6 +574,17 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
             w.MiscEarn = q.me, w.Oil_Amt = q.oil, w.Incentive_Amt = q.inc,
             w.FBasic_Rate = IF(w.Work_HR > 0, q.fb / w.Work_HR, 0)
         WHERE {W}
+    """), k)
+    # + PayM_AdjHR basic / DA; workers with only an adjustment get their rate from it too
+    db.execute(text(f"""
+        UPDATE paywages w JOIN hrms_ed_official_details o ON o.emp_code {UCI} = w.ECode AND o.branch_id = :b
+        JOIN _wp_adj j ON j.eb_id = o.eb_id
+        SET w.FBasic_Amt = w.FBasic_Amt + j.bs, w.DA_Amt = w.DA_Amt + j.da WHERE {W}
+    """), k)
+    db.execute(text(f"""
+        UPDATE paywages w JOIN hrms_ed_official_details o ON o.emp_code {UCI} = w.ECode AND o.branch_id = :b
+        JOIN _wp_adj j ON j.eb_id = o.eb_id
+        SET w.FBasic_Rate = IF(w.Work_HR > 0, w.FBasic_Amt / w.Work_HR, 0) WHERE {W}
     """), k)
     db.execute(text(f"""
         UPDATE paywages w JOIN hrms_ed_official_details o ON o.emp_code {UCI} = w.ECode AND o.branch_id = :b
@@ -533,6 +616,19 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
               ON a.ECode = w.ECode {UCI}
             SET w.{col} = a.amt WHERE {W}
         """), k)
+    # DA / HRA arrears not yet paid (1900-01-01 = legacy '') or paid by this period go into PFEarnAdj,
+    # then are marked paid in this period (a re-run picks the same rows up again)
+    arrear = "a.Paid_FNEDate IN ('1900-01-01', :t)"
+    db.execute(text(f"""
+        UPDATE paywages w JOIN (SELECT a.ECode, SUM(a.Arrear_Amt) amt FROM PayM_AdjArrear a WHERE {arrear}
+                                GROUP BY a.ECode) a ON a.ECode = w.ECode
+        SET w.PFEarnAdj = w.PFEarnAdj + a.amt WHERE {W}
+    """), k)
+    db.execute(text(f"""
+        UPDATE PayM_AdjArrear a JOIN (SELECT DISTINCT w.ECode FROM paywages w WHERE {W}) p ON p.ECode = a.ECode
+        SET a.Paid_FNEDate = :t, a.paid_period_id = :pid, a.UpdatedDate = NOW()
+        WHERE {arrear}
+    """), k)
     db.execute(text(f"""
         UPDATE paywages w SET
           w.PF_Gross = w.FBasic_Amt + w.VBasic_Amt + w.DA_Amt + w.NS_Amt + w.Holiday_Amt + w.STL_Amt
@@ -621,18 +717,20 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
               AND w.ESI_Gross / (w.Work_HR + w.NS_HR + w.Holiday_HR + w.STL_HR) * 8 > 173
         """), k)
 
-    # Professional tax: slab on the month's wages gross; 2nd half pays the balance
+    # Professional tax: slab on the month's wages gross so far; 2nd half pays the balance. By EDate, not
+    # PCode: a 1st-half re-run must not count an already processed 2nd half (legacy runs them in order)
     pt_rows = db.execute(text(f"""
         SELECT w.ECode, (SELECT SUM(m.Wages_Gross) FROM paywages m WHERE m.ECode = w.ECode
-                         AND YEAR(m.EDate) = :y AND MONTH(m.EDate) = :m) bamt,
+                         AND YEAR(m.EDate) = :y AND MONTH(m.EDate) = :m AND m.EDate <= :t) bamt,
                (SELECT IFNULL(SUM(m.PTax_Amt), 0) FROM paywages m WHERE m.ECode = w.ECode AND m.WDay = '01'
-                         AND YEAR(m.EDate) = :y AND MONTH(m.EDate) = :m AND m.PCode <> :p) paid
+                         AND YEAR(m.EDate) = :y AND MONTH(m.EDate) = :m AND m.EDate < :t) paid
         FROM paywages w WHERE {W} AND w.OPTax = 'Y'
     """), {**k, **month}).fetchall()
+    slabs = _ptax_slabs(db, loc, f)
     _bulk_apply(db, "_wp_ptax", "(ECode VARCHAR(20) NOT NULL PRIMARY KEY, bamt DOUBLE, tax DOUBLE)",
                 "(:e, :b, :t2)",
                 [{"e": r.ECode, "b": float(r.bamt or 0),
-                  "t2": _ptax(float(r.bamt or 0)) - (float(r.paid) if wday == "02" else 0)} for r in pt_rows],
+                  "t2": _ptax(float(r.bamt or 0), slabs) - (float(r.paid) if wday == "02" else 0)} for r in pt_rows],
                 f"""UPDATE paywages w JOIN _wp_ptax q ON q.ECode = w.ECode {UCI}
                     SET w.PTax_BAmt = q.bamt, w.PTax_Amt = q.tax WHERE {W} AND w.OPTax = 'Y'""", k)
 
@@ -653,6 +751,31 @@ def run_wages_process(db: Session, branch_id: int, period_id: int, lwf_amt: floa
           w.NetPayable = ROUND((w.Wages_Gross + w.BF) - w.TotalDeduction, 0)
         WHERE {W}
     """), k)
+    # Electricity recovery (2nd half only): bills (PayM_Elec) less everything recovered so far, at most
+    # the net pay and 200 a fortnight; then deductions / net again
+    if wday == "02":
+        db.execute(text(f"""
+            UPDATE paywages w JOIN (
+                SELECT e.ECode, SUM(e.TotalAmt) - IFNULL((SELECT SUM(p.Electricity) FROM paywages p
+                       WHERE p.ECode = e.ECode AND p.Electricity <> 0 AND p.EDate <= :t), 0) due
+                FROM PayM_Elec e WHERE e.EDate <= :t
+                  AND e.ECode IN (SELECT w2.ECode FROM paywages w2 WHERE {W.replace("w.", "w2.")})
+                GROUP BY e.ECode) x ON x.ECode = w.ECode
+            SET w.Electricity = LEAST(IF(w.NetPay > x.due, x.due, w.NetPay), 200)
+            WHERE {W}
+        """), k)
+        db.execute(text(f"""
+            UPDATE paywages w SET
+              w.TotalDeduction = w.PFEmployee + w.ESI_Amt + w.PTax_Amt + w.LWF_Amt + w.STLAdv + w.PFLoanCap
+                                 + w.PFLoanInt + w.SplAdvance + w.Advance + w.Electricity + w.HRDeduction
+            WHERE {W}
+        """), k)
+        db.execute(text(f"""
+            UPDATE paywages w SET w.NetPay = (w.Wages_Gross + w.BF) - w.TotalDeduction,
+              w.ROff = ROUND((w.Wages_Gross + w.BF) - w.TotalDeduction, 0) - ((w.Wages_Gross + w.BF) - w.TotalDeduction),
+              w.NetPayable = ROUND((w.Wages_Gross + w.BF) - w.TotalDeduction, 0)
+            WHERE {W}
+        """), k)
 
     # ── 6 numbering (parent SP: SrlNo overall, SlNo within department) ────
     db.execute(text(f"""

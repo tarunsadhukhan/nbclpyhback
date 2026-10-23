@@ -36,7 +36,6 @@ if missing_vars:
 # Default (main) database connection
 DEFAULT_DATABASE_URL = f"mysql+pymysql://{os.getenv('DATABASE_USER')}:{os.getenv('DATABASE_PASSWORD')}@" \
                        f"{os.getenv('DATABASE_HOST')}:{os.getenv('DATABASE_PORT')}/{os.getenv('DATABASE_DEFAULT')}"
-print('DE', DEFAULT_DATABASE_URL)
 default_engine = get_engine(DEFAULT_DATABASE_URL)
 
 # Create a sessionmaker

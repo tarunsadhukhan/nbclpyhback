@@ -76,6 +76,9 @@ GROUP BY
 
 -- =====================================================================================
 -- 2. NSh (night shift)  ->  ns_hrs, ot_ns_hrs
+--    C-shift days, per day on net hours (working - idle), 2 decimals, then summed:
+--      8 hrs -> hrs x 0.0625 (0.50),  5 hrs or more -> hrs x 0.0667 (7.5 -> 0.50, 7 -> 0.47),
+--      below 5 -> 0. Regular days -> ns_hrs, overtime days -> ot_ns_hrs.
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
 (
@@ -90,17 +93,27 @@ SELECT
     pp.id AS pay_period_id,
     SUM(
         CASE
-            WHEN da.attendance_type = 'R'
-             AND (da.working_hours - da.idle_hours) = 7.5
-            THEN 0.5
+            WHEN da.attendance_type = 'R' THEN
+                ROUND(CASE
+                          WHEN (da.working_hours - IFNULL(da.idle_hours, 0)) = 8
+                          THEN (da.working_hours - IFNULL(da.idle_hours, 0)) * 0.0625
+                          WHEN (da.working_hours - IFNULL(da.idle_hours, 0)) >= 5
+                          THEN (da.working_hours - IFNULL(da.idle_hours, 0)) * 0.0667
+                          ELSE 0
+                      END, 2)
             ELSE 0
         END
     ) AS ns_workinghrs,
     SUM(
         CASE
-            WHEN da.attendance_type = 'O'
-             AND (da.working_hours - da.idle_hours) = 7.5
-            THEN 0.5
+            WHEN da.attendance_type = 'O' THEN
+                ROUND(CASE
+                          WHEN (da.working_hours - IFNULL(da.idle_hours, 0)) = 8
+                          THEN (da.working_hours - IFNULL(da.idle_hours, 0)) * 0.0625
+                          WHEN (da.working_hours - IFNULL(da.idle_hours, 0)) >= 5
+                          THEN (da.working_hours - IFNULL(da.idle_hours, 0)) * 0.0667
+                          ELSE 0
+                      END, 2)
             ELSE 0
         END
     ) AS nsothrs,
@@ -255,15 +268,17 @@ HAVING SUM(a.adj_npf_amt) <> 0;
 
 
 -- =====================================================================================
--- 9. adj_hr  ->  adj_hr
+-- 9. adj_hr  ->  working_hours
 --    Lineage Work_HR: + SUM(PayM_AdjHR.Adj_HR) of the fortnight. The approved hours of
---    the adjustments entry table are added as well.
+--    the adjustments entry table are added as well. As in legacy the adjustment is folded
+--    into Work_HR (88 worked - 8 adjusted = 80) and PayWages.Adj_HR stays 0. Step 28 works
+--    DA and the night amount out on attendance hours only (updt_from ATT / NSH / FEST).
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
 (
     eb_id,
     period_id,
-    adj_hr,
+    working_hours,
     updt_from
 )
 SELECT
@@ -521,7 +536,8 @@ WHERE e.inst_adv > 0
 
 -- =====================================================================================
 -- 13. winding production  ->  Incentive_Amt
---     Steps 13-17: every production amount goes into the one column Incentive_Amt;
+--     Steps 13, 14, 16, 17: the production amount goes into Incentive_Amt (step 15 loom
+--     production goes into VBasic_Amt, as in legacy);
 --     updt_from tells which production it came from.
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
@@ -593,14 +609,16 @@ GROUP BY
 
 
 -- =====================================================================================
--- 15. loomprod  ->  Incentive_Amt
---     Weaver's share: payable_amt (80% of the production value).
+-- 15. loomprod  ->  VBasic_Amt
+--     Weaver's share: payable_amt (80% of the production value). Legacy GetRate adds
+--     PayOProdWvg.PayableAmt (= weaving_production) to VBasic_Amt, not Incentive_Amt, and only
+--     for category 01 / 02 / 03.
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
 (
     eb_id,
     period_id,
-    Incentive_Amt,
+    VBasic_Amt,
     updt_from
 )
 SELECT
@@ -609,9 +627,14 @@ SELECT
     ROUND(SUM(w.payable_amt), 2),
     'LOOMPROD'
 FROM nbjcl.weaving_production w
+INNER JOIN nbjcl.hrms_ed_official_details o
+    ON o.eb_id = w.eb_id AND o.active = 1 AND o.branch_id = @branch_id
+INNER JOIN nbjcl.category_mst g
+    ON g.cata_id = o.catagory_id
 WHERE w.branch_id = @branch_id
   AND w.active = 1
   AND w.prod_date BETWEEN @from_date AND @to_date
+  AND g.cata_code IN ('01', '02', '03')
 GROUP BY
     w.eb_id;
 
@@ -786,6 +809,31 @@ GROUP BY
 
 
 -- =====================================================================================
+-- 20a. DA / HRA arrears  ->  PFEarnAdj                                    updt_from ARREAR
+--      Legacy #Arrear: PayM_AdjArrear rows not yet paid (Paid_FNEDate 1900-01-01, legacy '')
+--      or already paid in this fortnight (re-run). Marked paid after step 42.
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    PFEarnAdj,
+    updt_from
+)
+SELECT
+    a.eb_id,
+    @period_id,
+    SUM(a.Arrear_Amt),
+    'ARREAR'
+FROM nbjcl.PayM_AdjArrear a
+WHERE a.branch_id = @branch_id
+  AND a.Paid_FNEDate IN ('1900-01-01', @to_date)
+  AND a.eb_id IS NOT NULL
+GROUP BY
+    a.eb_id;
+
+
+-- =====================================================================================
 -- 21. npf earn adj  ->  NPFEarnAdj
 --     Lineage: SUM(PayM_Adjustment.AdjNPF) for FNEDate = period end (nbjcl: PayM_AdjNPF).
 -- =====================================================================================
@@ -846,14 +894,16 @@ GROUP BY
 
 
 -- =====================================================================================
--- 23. adj basic  ->  AdjBasic
---     Basic amount of the fortnight's hour adjustments (PayM_AdjHR.Adj_BSAmt).
+-- 23. adj basic  ->  fbasicamt                                           updt_from ADJBASIC
+--     Basic amount of the fortnight's hour adjustments (PayM_AdjHR.Adj_BSAmt). As in legacy
+--     GetRate it is folded into FBasic_Amt (attendance basic + Adj_BSAmt); PayWages.AdjBasic
+--     stays 0. Step 28 works the night amount out on the attendance basic only.
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
 (
     eb_id,
     period_id,
-    AdjBasic,
+    fbasicamt,
     updt_from
 )
 SELECT
@@ -868,6 +918,32 @@ WHERE h.branch_id = @branch_id
 GROUP BY
     h.eb_id
 HAVING SUM(h.Adj_BSAmt) <> 0;
+
+
+-- =====================================================================================
+-- 23b. adj DA  ->  daamount                                              updt_from ADJDA
+--     DA amount of the fortnight's hour adjustments (PayM_AdjHR.Adj_DAAmt), folded into
+--     DA_Amt as in legacy GetRate (attendance DA + Adj_DAAmt).
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    daamount,
+    updt_from
+)
+SELECT
+    h.eb_id,
+    @period_id,
+    SUM(h.Adj_DAAmt),
+    'ADJDA'
+FROM nbjcl.PayM_AdjHR h
+WHERE h.branch_id = @branch_id
+  AND h.FNEDate = @to_date
+  AND h.eb_id IS NOT NULL
+GROUP BY
+    h.eb_id
+HAVING SUM(h.Adj_DAAmt) <> 0;
 
 
 -- =====================================================================================
@@ -1013,16 +1089,436 @@ WHERE w.rn = 1;
 
 
 -- =====================================================================================
+-- 27b. Fixed basic  ->  fbasicamt                                       updt_from FBASIC
+--     Legacy SP_WagesProcessing_Daily. Employee rate: PayOWagesRate, latest EffDate on or
+--     before the period end. Occupation rate: PayOWagesRate_OCP of the worked designation
+--     (designation_mst.occu_code), latest EFFDate on or before the period start.
+--       category (cata_code) 02 / 03 and the occupation has a rate : Rate   / FBasic_HR x hours
+--       otherwise (no occupation check)                            : FBasic / FBasic_HR x hours
+--     (legacy: LEFT(PayOEMP.EGroup, 2) IN ('02','03')). Legacy works out FBasic on DUTY and OT
+--     rows, but GetRate carries only the DUTY rows into PayWages.FBasic_Amt, so regular (R)
+--     hours are used here.
+--     One row per employee per rate used, hours summed first, so the amount is rounded once
+--     per rate and not per day. Working hours of regular (R) attendance, as step 1.
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    fbasicamt,
+    updt_from
+)
+SELECT
+    f.eb_id,
+    @period_id,
+    ROUND(f.rate / f.fbasic_hr * f.hrs, 2),
+    'FBASIC'
+FROM (
+    SELECT
+        da.eb_id,
+        por.FBasic_HR AS fbasic_hr,
+        IFNULL(CASE WHEN g.cata_code IN ('02', '03') THEN poo.Rate END, por.FBasic) AS rate,
+        SUM(da.working_hours - IFNULL(da.idle_hours, 0)) AS hrs
+    FROM nbjcl.daily_attendance da
+    LEFT JOIN nbjcl.designation_mst dm
+        ON dm.designation_id = da.worked_designation_id
+    LEFT JOIN nbjcl.hrms_ed_official_details o
+        ON o.eb_id = da.eb_id AND o.active = 1
+    LEFT JOIN nbjcl.category_mst g
+        ON g.cata_id = o.catagory_id
+    INNER JOIN (
+        SELECT p.eb_id, p.FBasic, p.FBasic_HR
+        FROM nbjcl.PayOWagesRate p
+        INNER JOIN (
+            SELECT eb_id, MAX(EffDate) AS me
+            FROM nbjcl.PayOWagesRate
+            WHERE EffDate <= @to_date
+            GROUP BY eb_id
+        ) m
+            ON m.eb_id = p.eb_id AND m.me = p.EffDate
+    ) por
+        ON por.eb_id = da.eb_id
+    LEFT JOIN (
+        SELECT o.OcpCode, o.Rate
+        FROM nbjcl.PayOWagesRate_OCP o
+        INNER JOIN (
+            SELECT OcpCode, MAX(EFFDate) AS me
+            FROM nbjcl.PayOWagesRate_OCP
+            WHERE EFFDate <= @from_date
+            GROUP BY OcpCode
+        ) m
+            ON m.OcpCode = o.OcpCode AND m.me = o.EFFDate
+    ) poo
+        ON poo.OcpCode = dm.occu_code COLLATE utf8mb4_unicode_ci
+    WHERE da.branch_id = @branch_id
+      AND da.attendance_date BETWEEN @from_date AND @to_date
+      AND da.is_active = 1
+      AND da.status_id = 3
+      AND da.attendance_type = 'R'
+    GROUP BY
+        da.eb_id,
+        por.FBasic_HR,
+        IFNULL(CASE WHEN g.cata_code IN ('02', '03') THEN poo.Rate END, por.FBasic)
+) f
+WHERE f.fbasic_hr > 0;
+
+
+-- =====================================================================================
+-- 27c. Variable basic  ->  VBasic_Amt                                    updt_from VBASIC
+--     Work_HR x 0.51, only for employees of category (cata_code) 01 / 02 / 03 and only for
+--     the regular working hours worked in occupation 0205 (worked designation's
+--     designation_mst.occu_code). Other categories get no variable basic.
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    VBasic_Amt,
+    updt_from
+)
+SELECT
+    da.eb_id,
+    @period_id,
+    ROUND(SUM(da.working_hours - IFNULL(da.idle_hours, 0)) * 0.51, 2),
+    'VBASIC'
+FROM nbjcl.daily_attendance da
+INNER JOIN nbjcl.designation_mst dm
+    ON dm.designation_id = da.worked_designation_id
+INNER JOIN nbjcl.hrms_ed_official_details o
+    ON o.eb_id = da.eb_id AND o.active = 1
+INNER JOIN nbjcl.category_mst g
+    ON g.cata_id = o.catagory_id
+WHERE da.branch_id = @branch_id
+  AND da.attendance_date BETWEEN @from_date AND @to_date
+  AND da.is_active = 1
+  AND da.status_id = 3
+  AND da.attendance_type = 'R'
+  AND dm.occu_code = '0205'
+  AND g.cata_code IN ('01', '02', '03')
+GROUP BY da.eb_id
+HAVING SUM(da.working_hours - IFNULL(da.idle_hours, 0)) > 0;
+
+
+-- =====================================================================================
+-- 27d. Sewing production  ->  VBasic_Amt                                 updt_from VBASICSWG
+--     Legacy GetOthAmt "11-SEWING": the fortnight's PayOProdSwg rows of dept 11 go to
+--     PayOProdVBasic with their Amount, and GetRate sums them into VBasic_Amt for
+--     categories 01 / 02 / 03 only.
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    VBasic_Amt,
+    updt_from
+)
+SELECT
+    s.eb_id,
+    @period_id,
+    SUM(s.Amount),
+    'VBASICSWG'
+FROM nbjcl.payoprodswg s
+INNER JOIN nbjcl.hrms_ed_official_details o
+    ON o.eb_id = s.eb_id AND o.active = 1 AND o.branch_id = @branch_id
+INNER JOIN nbjcl.category_mst g
+    ON g.cata_id = o.catagory_id
+WHERE s.branch_id = @branch_id
+  AND s.FNEDate = @to_date
+  AND s.DeptCode = '11'
+  AND g.cata_code IN ('01', '02', '03')
+GROUP BY s.eb_id
+HAVING SUM(s.Amount) <> 0;
+
+
+-- =====================================================================================
+-- 27e. Winding production  ->  VBasic_Amt                                updt_from VBASICWDG
+--     Legacy GetOthAmt "05-WINDING/0501-COP WINDER": production kg x the quality's rate in
+--     PayOQLT (dept 05), summed by GetRate into VBasic_Amt for category 01 / 02 / 03.
+--     Separate from step 13, which pays the winding incentive from the same rows.
+--     winding_quality_mst codes do not follow the legacy QCode, so the quality is matched on
+--     its name, ignoring spaces and no-break spaces.
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    VBasic_Amt,
+    updt_from
+)
+SELECT
+    w.eb_id,
+    @period_id,
+    SUM(ROUND(w.prod_kg * q.Rate, 2)),
+    'VBASICWDG'
+FROM nbjcl.winding_production w
+INNER JOIN nbjcl.winding_quality_mst wq
+    ON wq.wdg_q_id = w.wdg_q_id
+INNER JOIN nbjcl.PayOQLT q
+    ON q.DeptCode = '05'
+    AND REPLACE(REPLACE(q.QName, ' ', ''), CHAR(0xC2A0 USING utf8mb4), '')
+      = REPLACE(REPLACE(wq.quality_desc, ' ', ''), CHAR(0xC2A0 USING utf8mb4), '') COLLATE utf8mb4_unicode_ci
+INNER JOIN nbjcl.hrms_ed_official_details o
+    ON o.eb_id = w.eb_id AND o.active = 1 AND o.branch_id = @branch_id
+INNER JOIN nbjcl.category_mst g
+    ON g.cata_id = o.catagory_id
+WHERE w.branch_id = @branch_id
+  AND w.active = 1
+  AND w.prod_date BETWEEN @from_date AND @to_date
+  AND g.cata_code IN ('01', '02', '03')
+GROUP BY w.eb_id
+HAVING SUM(ROUND(w.prod_kg * q.Rate, 2)) <> 0;
+
+
+-- =====================================================================================
+-- 27f. Weaving line sirder / line helper  ->  VBasic_Amt                 updt_from VBASICWVG
+--     Legacy GetOthAmt "30-SACKING WEAVING" and "32-HESSIAN WEAVING", per shift (spell):
+--       shift rate = loom production amount of the department's looms in the shift
+--                    (weaving_production, loom dept from machine_mst = legacy PayOProdWvg
+--                    DeptCode) / weaver working hours of the department in the shift
+--       VBasic     = the employee's hours of the shift in the occupation x shift rate x factor
+--         3001 sacking line sirder : dept 30, weavers 3005, factor 143.5 / 100
+--         3004 sacking line helper : dept 30, weavers 3005, factor 1
+--         3201 hessian line sirder : dept 32, weavers 3202, factor 143.5 / 100
+--         3203 hessian line helper : dept 32, weavers 3202, factor 1
+--     Rates held to 6 decimals as in legacy; amount rounded per employee, occupation and
+--     shift, summed by GetRate for category 01 / 02 / 03.
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    VBasic_Amt,
+    updt_from
+)
+SELECT
+    ls.eb_id,
+    @period_id,
+    SUM(ROUND(ls.hrs * ROUND(IFNULL(rx.rate, 0) * ls.factor, 6), 2)),
+    'VBASICWVG'
+FROM (
+    SELECT da.eb_id, oc.dept, oc.factor, sp.spell_code AS shift,
+           SUM(da.working_hours - IFNULL(da.idle_hours, 0)) AS hrs
+    FROM nbjcl.daily_attendance da
+    INNER JOIN nbjcl.designation_mst dm
+        ON dm.designation_id = da.worked_designation_id
+    INNER JOIN nbjcl.spell_mst sp
+        ON sp.spell_id = da.spell_id
+    INNER JOIN (
+        SELECT '3001' AS occ, '30' AS dept, 1.435 AS factor
+        UNION ALL SELECT '3004', '30', 1
+        UNION ALL SELECT '3201', '32', 1.435
+        UNION ALL SELECT '3203', '32', 1
+    ) oc
+        ON oc.occ = dm.occu_code
+    WHERE da.branch_id = @branch_id
+      AND da.attendance_date BETWEEN @from_date AND @to_date
+      AND da.is_active = 1
+      AND da.status_id = 3
+      AND da.attendance_type = 'R'
+    GROUP BY da.eb_id, dm.occu_code, oc.dept, oc.factor, sp.spell_code
+) ls
+LEFT JOIN (
+    SELECT p.dept, p.shift, ROUND(p.amt / h.hrs, 6) AS rate
+    FROM (
+        SELECT d.dept_code AS dept, w.shift, SUM(w.amount) AS amt
+        FROM nbjcl.weaving_production w
+        INNER JOIN nbjcl.machine_mst m
+            ON m.machine_id = w.machine_id
+        INNER JOIN nbjcl.dept_mst d
+            ON d.dept_id = m.dept_id
+        WHERE w.branch_id = @branch_id
+          AND w.active = 1
+          AND w.prod_date BETWEEN @from_date AND @to_date
+          AND d.dept_code IN ('30', '32')
+        GROUP BY d.dept_code, w.shift
+    ) p
+    INNER JOIN (
+        SELECT CASE dm.occu_code WHEN '3005' THEN '30' ELSE '32' END AS dept, sp.spell_code AS shift,
+               SUM(da.working_hours - IFNULL(da.idle_hours, 0)) AS hrs
+        FROM nbjcl.daily_attendance da
+        INNER JOIN nbjcl.designation_mst dm
+            ON dm.designation_id = da.worked_designation_id
+        INNER JOIN nbjcl.spell_mst sp
+            ON sp.spell_id = da.spell_id
+        WHERE da.branch_id = @branch_id
+          AND da.attendance_date BETWEEN @from_date AND @to_date
+          AND da.is_active = 1
+          AND da.status_id = 3
+          AND da.attendance_type = 'R'
+          AND dm.occu_code IN ('3005', '3202')
+        GROUP BY CASE dm.occu_code WHEN '3005' THEN '30' ELSE '32' END, sp.spell_code
+    ) h
+        ON h.dept = p.dept AND h.shift = p.shift
+    WHERE h.hrs > 0
+) rx
+    ON rx.dept = ls.dept AND rx.shift = ls.shift
+INNER JOIN nbjcl.hrms_ed_official_details o
+    ON o.eb_id = ls.eb_id AND o.active = 1 AND o.branch_id = @branch_id
+INNER JOIN nbjcl.category_mst g
+    ON g.cata_id = o.catagory_id
+WHERE g.cata_code IN ('01', '02', '03')
+GROUP BY ls.eb_id
+HAVING SUM(ROUND(ls.hrs * ROUND(IFNULL(rx.rate, 0) * ls.factor, 6), 2)) <> 0;
+
+
+-- =====================================================================================
+-- 27g. Beaming  ->  VBasic_Amt                                           updt_from VBASICBMG
+--     Legacy GetOthAmt "07-BEAMING" (PayOProdBmg). Per machine and shift of the fortnight
+--     (beaming_production):
+--       TotalValue = production value x machine hrs / (machine hrs - lost hrs)
+--       KAV        = 5% of TotalValue
+--       Rate1 = (TotalValue - KAV) / divisible hrs,  Rate2 = KAV / 32,  Rate3 = KAV / 48
+--     An employee is matched to EVERY machine of the shift he or she worked in, and the
+--     rate is averaged across those machines (legacy AVG(Rate) x AVG(Prod_HR)):
+--       0701 beamer sirder : hours of the shift x AVG(Rate1 + Rate2)
+--       0702 beamer        : hours of the shift x AVG(Rate1)
+--       0703 head beamer   : hours of the shift x AVG(Rate1 + Rate3)
+--     Rounded per employee, occupation and shift; GetRate sums it into VBasic_Amt for
+--     category 01 / 02 / 03.
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    VBasic_Amt,
+    updt_from
+)
+SELECT
+    a.eb_id,
+    @period_id,
+    SUM(ROUND(a.hrs * CASE a.occ WHEN '0701' THEN r.rate_0701
+                                 WHEN '0702' THEN r.rate_0702
+                                 ELSE r.rate_0703 END, 2)),
+    'VBASICBMG'
+FROM (
+    SELECT da.eb_id, dm.occu_code AS occ, sh.shift_name,
+           SUM(da.working_hours - IFNULL(da.idle_hours, 0)) AS hrs
+    FROM nbjcl.daily_attendance da
+    INNER JOIN nbjcl.designation_mst dm
+        ON dm.designation_id = da.worked_designation_id
+    INNER JOIN nbjcl.spell_mst sp
+        ON sp.spell_id = da.spell_id
+    INNER JOIN nbjcl.shift_mst sh
+        ON sh.shift_id = sp.shift_id
+    WHERE da.branch_id = @branch_id
+      AND da.attendance_date BETWEEN @from_date AND @to_date
+      AND da.is_active = 1
+      AND da.status_id = 3
+      AND da.attendance_type = 'R'
+      AND dm.occu_code IN ('0701', '0702', '0703')
+    GROUP BY da.eb_id, dm.occu_code, sh.shift_name
+) a
+INNER JOIN (
+    SELECT m.shift,
+           AVG(m.rate1 + m.rate2) AS rate_0701,
+           AVG(m.rate1)           AS rate_0702,
+           AVG(m.rate1 + m.rate3) AS rate_0703
+    FROM (
+        SELECT b.shift,
+               ROUND(0.95 * b.tv / b.dh, 6) AS rate1,
+               ROUND(0.05 * b.tv / 32, 6)   AS rate2,
+               ROUND(0.05 * b.tv / 48, 6)   AS rate3
+        FROM (
+            SELECT bp.shift, bp.machine_id,
+                   SUM(bp.amount) * SUM(bp.wk_hrs) / NULLIF(SUM(bp.wk_hrs) - SUM(bp.lost_hrs), 0) AS tv,
+                   SUM(bp.divisible_hrs) AS dh
+            FROM nbjcl.beaming_production bp
+            WHERE bp.branch_id = @branch_id
+              AND bp.active = 1
+              AND bp.prod_date BETWEEN @from_date AND @to_date
+            GROUP BY bp.shift, bp.machine_id
+        ) b
+        WHERE b.dh > 0 AND b.tv IS NOT NULL
+    ) m
+    GROUP BY m.shift
+) r
+    ON r.shift = CONVERT(a.shift_name USING utf8mb4)
+INNER JOIN nbjcl.hrms_ed_official_details o
+    ON o.eb_id = a.eb_id AND o.active = 1 AND o.branch_id = @branch_id
+INNER JOIN nbjcl.category_mst g
+    ON g.cata_id = o.catagory_id
+WHERE g.cata_code IN ('01', '02', '03')
+GROUP BY a.eb_id;
+
+
+-- =====================================================================================
+-- 27h. Finishing press  ->  VBasic_Amt                                   updt_from VBASICPRS
+--     Legacy GetOthAmt "12-FINISHING" as is: the press rows of the fortnight
+--     (payoprodpress, FNEDate = period end, dept 12) already carry Prod_HR and Rate1-4
+--     (FrmProdPress). An employee who worked the occupation in a shift is matched to EVERY
+--     press row of that shift; per shift and quality, the MACHINE hours and the rate are
+--     averaged across the rows:
+--       amount = AVG(Prod_HR) x AVG(rate)
+--       1201 pressman 1 : Rate1 + Rate2      1202 pressman 2 : Rate1 + Rate3
+--       1203 pressman 3 : Rate1 + Rate4      1204 pressman 4 : Rate1 + Rate4
+--     Rounded per employee, occupation, shift and quality; GetRate sums it into VBasic_Amt
+--     for category 01 / 02 / 03.
+-- =====================================================================================
+INSERT INTO nbjcl.nbjcl_wages_data_collection
+(
+    eb_id,
+    period_id,
+    VBasic_Amt,
+    updt_from
+)
+SELECT
+    a.eb_id,
+    @period_id,
+    SUM(ROUND(r.avg_hrs * CASE a.occ WHEN '1201' THEN r.rate_1201
+                                     WHEN '1202' THEN r.rate_1202
+                                     ELSE r.rate_1203 END, 2)),
+    'VBASICPRS'
+FROM (
+    SELECT DISTINCT da.eb_id, dm.occu_code AS occ, sh.shift_name
+    FROM nbjcl.daily_attendance da
+    INNER JOIN nbjcl.designation_mst dm
+        ON dm.designation_id = da.worked_designation_id
+    INNER JOIN nbjcl.spell_mst sp
+        ON sp.spell_id = da.spell_id
+    INNER JOIN nbjcl.shift_mst sh
+        ON sh.shift_id = sp.shift_id
+    WHERE da.branch_id = @branch_id
+      AND da.attendance_date BETWEEN @from_date AND @to_date
+      AND da.is_active = 1
+      AND da.status_id = 3
+      AND da.attendance_type = 'R'
+      AND dm.occu_code IN ('1201', '1202', '1203', '1204')
+) a
+INNER JOIN (
+    SELECT m.WShift, m.QCode,
+           AVG(m.Prod_HR)         AS avg_hrs,
+           AVG(m.Rate1 + m.Rate2) AS rate_1201,
+           AVG(m.Rate1 + m.Rate3) AS rate_1202,
+           AVG(m.Rate1 + m.Rate4) AS rate_1203
+    FROM (
+        SELECT DISTINCT pr.WShift, pr.MachCode, pr.QCode, pr.Prod_HR, pr.Rate1, pr.Rate2, pr.Rate3, pr.Rate4
+        FROM nbjcl.payoprodpress pr
+        WHERE pr.branch_id = @branch_id
+          AND pr.FNEDate = @to_date
+          AND pr.DeptCode = '12'
+    ) m
+    GROUP BY m.WShift, m.QCode
+) r
+    ON r.WShift = CONVERT(a.shift_name USING utf8mb4)
+INNER JOIN nbjcl.hrms_ed_official_details o
+    ON o.eb_id = a.eb_id AND o.active = 1 AND o.branch_id = @branch_id
+INNER JOIN nbjcl.category_mst g
+    ON g.cata_id = o.catagory_id
+WHERE g.cata_code IN ('01', '02', '03')
+GROUP BY a.eb_id;
+
+
+-- =====================================================================================
 -- 28. Rates, basic, DA and night amount
---       ->  OFBasic, OFBasic_HR, FBasic_Rate, fbasicamt, DA_Rate, daamount, NS_Amt
+--       ->  OFBasic, OFBasic_HR, FBasic_Rate, DA_Rate, daamount, NS_Amt
 --     Rate in force at the period end (worker_rate_mst: latest effective row, the active
 --     row wins a tie), applied to the hours collected by steps 1-3:
 --       OFBasic     = fbasic                      OFBasic_HR = fbasic_hr (208)
---       FBasic_Rate = fbasic / fbasic_hr          fbasicamt  = FBasic_Rate x working hours
+--       FBasic_Rate = fbasic / fbasic_hr          fbasicamt  = sum of the FBASIC rows (27b)
 --       DA_Rate     = da_rate when DA applies     daamount   = da_rate / fbasic_hr x working hours
---       NS_Amt      = (fbasicamt + daamount) / working hours x night hours
+--       NS_Amt      = (fbasicamt + VBasic_Amt + daamount) / working hours x night hours
 --     Same rules as the migrated wage rows and the existing wages process. Reads the hours
---     of steps 1-2, so it must run after them.
+--     of steps 1-2 and the basic of step 27b, so it must run after them.
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
 (
@@ -1031,7 +1527,6 @@ INSERT INTO nbjcl.nbjcl_wages_data_collection
     OFBasic,
     OFBasic_HR,
     FBasic_Rate,
-    fbasicamt,
     DA_Rate,
     daamount,
     NS_Amt,
@@ -1043,21 +1538,21 @@ SELECT
     y.fbasic,
     y.fbasic_hr,
     y.fbasic / y.fbasic_hr,
-    y.fb_amt,
     y.da_rate,
     y.da_amt,
-    CASE WHEN y.wk_hrs > 0 THEN ROUND((y.fb_amt + y.da_amt) / y.wk_hrs * y.ns_hrs, 2) ELSE 0 END,
+    CASE WHEN y.wk_hrs > 0 THEN ROUND((y.fb_amt + y.vb_amt + y.da_amt) / y.wk_hrs * y.ns_hrs, 2) ELSE 0 END,
     'RATE'
 FROM (
     SELECT
         x.eb_id,
         x.wk_hrs,
+        IFNULL(fb.vb_amt, 0) AS vb_amt,
         x.ns_hrs,
         r.fbasic,
         r.fbasic_hr,
         -- category 05 carries no DA rate on the slip
         CASE WHEN r.da_all = 'Y' AND LEFT(IFNULL(g.cata_desc, ''), 2) <> '05' THEN r.da_rate ELSE 0 END AS da_rate,
-        ROUND(r.fbasic / r.fbasic_hr * x.wk_hrs, 2) AS fb_amt,
+        IFNULL(fb.fb_amt, 0) AS fb_amt,
         CASE WHEN r.da_all = 'Y' THEN ROUND(r.da_rate / r.fbasic_hr * x.wk_hrs, 2) ELSE 0 END AS da_amt
     FROM (
         SELECT dc.eb_id,
@@ -1080,6 +1575,14 @@ FROM (
         WHERE w.rn = 1
     ) r
         ON r.eb_id = x.eb_id
+    LEFT JOIN (
+        SELECT dc.eb_id, SUM(dc.fbasicamt) AS fb_amt, SUM(dc.VBasic_Amt) AS vb_amt
+        FROM nbjcl.nbjcl_wages_data_collection dc
+        WHERE dc.period_id = @period_id
+          AND dc.updt_from IN ('FBASIC', 'VBASIC', 'VBASICSWG', 'VBASICWDG', 'VBASICWVG', 'VBASICBMG', 'VBASICPRS', 'LOOMPROD')
+        GROUP BY dc.eb_id
+    ) fb
+        ON fb.eb_id = x.eb_id
     LEFT JOIN nbjcl.hrms_ed_official_details o
         ON o.eb_id = x.eb_id AND o.active = 1
     LEFT JOIN nbjcl.category_mst g
@@ -1097,8 +1600,9 @@ FROM (
 --
 -- Two temporary tables are prepared first:
 --   _dc_rate  : per employee - legacy code, category group and the rate-master flags
---   _dc_month : per legacy code - what the OTHER fortnight of the same month already
---               holds in paywages (PF, ESI and professional tax are monthly)
+--   _dc_month : per legacy code - what the EARLIER fortnight of the same month already
+--               holds in paywages (PF, ESI and professional tax are monthly). Earlier only:
+--               legacy runs the halves in order, so a 1st-half re-run must not see the 2nd half
 -- =====================================================================================
 DROP TEMPORARY TABLE IF EXISTS _dc_rate;
 CREATE TEMPORARY TABLE _dc_rate (PRIMARY KEY (eb_id)) AS
@@ -1148,13 +1652,13 @@ FROM nbjcl.paywages m
 WHERE m.CompCode = 'NJB' AND m.Location = 'FACTORY'
   AND m.Grade = 'MILL-WORKMEN'
   AND YEAR(m.EDate) = YEAR(@to_date) AND MONTH(m.EDate) = MONTH(@to_date)
-  AND m.EDate <> @to_date
+  AND m.EDate < @to_date
 GROUP BY m.ECode;
 
 
 -- =====================================================================================
 -- 29. Holiday amount  ->  Holiday_Amt                                   updt_from HOLAMT
---     Worked in the period : (basic + DA) / working hours x festival hours
+--     Worked in the period : (basic + variable basic + DA) / working hours x festival hours
 --     Holiday only         : (basic per hour + DA per hour) x festival hours
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
@@ -1168,7 +1672,7 @@ SELECT
     s.eb_id,
     @period_id,
     CASE
-        WHEN s.wk_hrs > 0 THEN ROUND((s.fb_amt + s.da_amt) / s.wk_hrs * s.fest_hrs, 2)
+        WHEN s.wk_hrs > 0 THEN ROUND((s.fb_amt + s.vb_amt + s.da_amt) / s.wk_hrs * s.fest_hrs, 2)
         WHEN s.of_hr > 0 THEN ROUND((s.fb_rate + s.da_rate / s.of_hr) * s.fest_hrs, 2)
         ELSE 0
     END,
@@ -1178,6 +1682,7 @@ FROM (
            SUM(dc.working_hours) AS wk_hrs,
            SUM(dc.fest_hours)    AS fest_hrs,
            SUM(dc.fbasicamt)     AS fb_amt,
+           SUM(dc.VBasic_Amt)    AS vb_amt,
            SUM(dc.daamount)      AS da_amt,
            SUM(dc.FBasic_Rate)   AS fb_rate,
            SUM(dc.DA_Rate)       AS da_rate,
@@ -1191,7 +1696,7 @@ FROM (
 
 -- =====================================================================================
 -- 30. PF gross  ->  PF_Gross, HRA_Gross, BNSGrs                        updt_from PFGROSS
---     basic + DA + night + holiday + STL + PF earning adjustment + lost-hour + layoff amount.
+--     basic + variable basic + DA + night + holiday + STL + PF earning adjustment + lost-hour + layoff amount.
 --     HRA gross and bonus gross are the same figure.
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
@@ -1212,7 +1717,7 @@ SELECT
     'PFGROSS'
 FROM (
     SELECT dc.eb_id,
-           SUM(dc.fbasicamt + dc.daamount + dc.NS_Amt + dc.Holiday_Amt + dc.STL_Amt
+           SUM(dc.fbasicamt + dc.VBasic_Amt + dc.daamount + dc.NS_Amt + dc.Holiday_Amt + dc.STL_Amt
                + dc.adj_pf + dc.PFEarnAdj + dc.LostHR_Amt + dc.LayOffHR_Amt) AS pf_gross
     FROM nbjcl.nbjcl_wages_data_collection dc
     WHERE dc.period_id = @period_id
@@ -1431,8 +1936,9 @@ WHERE (DAY(@from_date) = 1 AND x.hrs > 0 AND x.esi_gross / x.hrs * 8 > 173)
 
 -- =====================================================================================
 -- 35. Professional tax  ->  PTax_BAmt, PTax_Amt                           updt_from PTAX
---     Slab on the month's wages gross (up to 10,000: 0 / 15,000: 110 / 25,000: 130 /
---     40,000: 150 / above: 200). The 2nd fortnight pays the slab less the 1st fortnight's tax.
+--     Slab on the month's wages gross from PayOMiscRate (All_Type PTAX, Location FACTORY, the
+--     latest EffDate on or before the period start, as legacy: FRate..SRate -> FRate_HR).
+--     The 2nd fortnight pays the slab less the 1st fortnight's tax.
 --     Workers flagged for professional tax in the rate master.
 -- =====================================================================================
 INSERT INTO nbjcl.nbjcl_wages_data_collection
@@ -1447,14 +1953,15 @@ SELECT
     x.eb_id,
     @period_id,
     x.bamt,
-    CASE
-        WHEN x.bamt >= 1 AND x.bamt <= 10000 THEN 0
-        WHEN x.bamt > 10000 AND x.bamt <= 15000 THEN 110
-        WHEN x.bamt > 15000 AND x.bamt <= 25000 THEN 130
-        WHEN x.bamt > 25000 AND x.bamt <= 40000 THEN 150
-        WHEN x.bamt > 40000 AND x.bamt <= 500000 THEN 200
-        ELSE 0
-    END - CASE WHEN DAY(@from_date) = 1 THEN 0 ELSE x.paid END,
+    IFNULL((
+        SELECT m.FRate_HR
+        FROM nbjcl.PayOMiscRate m
+        WHERE m.All_Type = 'PTAX' AND m.Location = 'FACTORY'
+          AND x.bamt BETWEEN m.FRate AND m.SRate
+          AND m.EffDate = (SELECT MAX(m2.EffDate) FROM nbjcl.PayOMiscRate m2
+                           WHERE m2.All_Type = 'PTAX' AND m2.Location = 'FACTORY' AND m2.EffDate <= @from_date)
+        LIMIT 1
+    ), 0) - CASE WHEN DAY(@from_date) = 1 THEN 0 ELSE x.paid END,
     'PTAX'
 FROM (
     SELECT
@@ -1812,8 +2319,8 @@ SELECT
     s.obasicamt AS Basic_Amt,
     'N' AS OVBasic,
     0 AS OVBasic_HR,
-    0 AS VBasic_Rate,
-    0 AS VBasic_Amt,
+    IF(s.VBasic_Amt <> 0, 0.51, 0) AS VBasic_Rate,
+    s.VBasic_Amt AS VBasic_Amt,
     IFNULL(r.da_all, 'N') AS ODA_All,
     s.DA_Rate AS ODA_Rate,
     IF(s.OFBasic_HR > 0, s.OFBasic_HR, IFNULL(r.fbasic_hr, 208)) AS ODA_HR,
@@ -1944,6 +2451,7 @@ FROM (
         SUM(nwdc.advance) AS advance,
         SUM(nwdc.fbasicamt) AS fbasicamt,
         SUM(nwdc.obasicamt) AS obasicamt,
+        SUM(nwdc.VBasic_Amt) AS VBasic_Amt,
         SUM(nwdc.daamount) AS daamount,
         SUM(nwdc.LostHR_Amt) AS LostHR_Amt,
         SUM(nwdc.LayOffHR_Amt) AS LayOffHR_Amt,
@@ -2087,6 +2595,23 @@ WHERE NOT EXISTS (
       AND m.PCode = pp.code COLLATE utf8mb4_unicode_ci
       AND m.PCName <> 'VOWERP PROCESS'
 );
+
+
+-- =====================================================================================
+-- 43. Arrears of step 20a paid in this fortnight (only workers who got a wages row)
+-- =====================================================================================
+UPDATE nbjcl.PayM_AdjArrear a
+INNER JOIN (
+    SELECT DISTINCT w.ECode
+    FROM nbjcl.paywages w
+    WHERE w.CompCode = 'NJB' AND w.Location = 'FACTORY' AND w.UnitCode = '01' AND w.EDate = @to_date
+) p
+    ON p.ECode = a.ECode
+SET a.Paid_FNEDate = @to_date,
+    a.paid_period_id = @period_id,
+    a.UpdatedDate = NOW()
+WHERE a.branch_id = @branch_id
+  AND a.Paid_FNEDate IN ('1900-01-01', @to_date);
 
 
 -- =====================================================================================

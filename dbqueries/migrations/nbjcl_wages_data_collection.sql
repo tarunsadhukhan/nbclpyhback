@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS `nbjcl_wages_data_collection` (
   `advance` decimal(10,2) NOT NULL DEFAULT 0,
   `fbasicamt` decimal(10,2) NOT NULL DEFAULT 0,
   `obasicamt` decimal(10,2) NOT NULL DEFAULT 0,
+  `VBasic_Amt` decimal(10,2) NOT NULL DEFAULT 0,  -- added 2026-10-20 (ALTER TABLE ... ADD COLUMN VBasic_Amt ... AFTER obasicamt)
   `daamount` decimal(10,2) NOT NULL DEFAULT 0,
   `LostHR_Amt` decimal(10,2) NOT NULL DEFAULT 0,
   `LayOffHR_Amt` decimal(10,2) NOT NULL DEFAULT 0,
