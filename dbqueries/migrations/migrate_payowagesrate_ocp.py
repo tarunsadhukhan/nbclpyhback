@@ -5,6 +5,10 @@ PayOWagesRate / PayODARate already there).
     python dbqueries/migrations/migrate_payowagesrate_ocp.py            # dry run: columns, DDL, row count
     python dbqueries/migrations/migrate_payowagesrate_ocp.py --execute  # create table + load (refuses if it holds rows)
     python dbqueries/migrations/migrate_payowagesrate_ocp.py ODPTOCP --execute  # any other legacy table, same way
+    python dbqueries/migrations/migrate_payowagesrate_ocp.py PayMAtten --execute --replace  # re-sync: delete + reload
+
+--replace is for pure mirrors that legacy still owns (PayOEMP, PayOSAL, PayMAtten); never PaySalary or other
+tables the tenant processes write to.
 
 Env: tenant DB from env/database.env (run from pyhback/), MSSQL_PWD = SQL Server password (login ERP),
 TENANT_DB (default nbjcl).
@@ -72,9 +76,11 @@ def main() -> None:
     cur = my.cursor()
     cur.execute(ddl)
     cur.execute(f"SELECT COUNT(*) FROM `{TABLE}`")
-    if cur.fetchone()[0]:
+    if cur.fetchone()[0] and "--replace" not in sys.argv:
         sys.exit(f"{tenant}.{TABLE} already holds rows - refusing to load again")
     try:
+        if "--replace" in sys.argv:
+            cur.execute(f"DELETE FROM `{TABLE}`")
         sql = "INSERT INTO `%s` (%s) VALUES (%s)" % (TABLE, ",".join(f"`{c}`" for c in cols), ",".join(["%s"] * len(cols)))
         for i in range(0, len(rows), 5000):
             cur.executemany(sql, rows[i:i + 5000])

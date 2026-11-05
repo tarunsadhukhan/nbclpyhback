@@ -69,11 +69,13 @@ jobs:
             # `up -d`, which happily reports the OLD image as Running — the
             # deploy silently no-ops and only dies on the prune.
             set -e
-            # The /tmp/nbclerp-deploy.lock flock that used to be here guarded
-            # against nbclerp3ui's `docker image prune -f` deleting layers while
-            # this job extracted them. Both repos shared one VPS then; they no
-            # longer do (backend 45.58.59.64, frontend 45.58.59.71), so there is
-            # nothing left to race against on this host.
+            # Frontend and backend share VPS 189.72.144.77, and both deploys end
+            # in `docker image prune -f`. GitHub's `concurrency` group is
+            # per-repo, so the other repo's prune can delete layers while THIS
+            # job extracts them ("link <a> <b>: no such file or directory").
+            # One lock file shared by both repos serialises them on the host.
+            exec 9>/tmp/nbclerp-deploy.lock
+            flock -w 900 9
             cd /opt/nbjcl/nbclerp3be
             docker network inspect nbclerp >/dev/null 2>&1 || docker network create nbclerp
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin

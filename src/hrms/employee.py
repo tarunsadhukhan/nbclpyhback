@@ -103,6 +103,7 @@ def employee_list(
         status_id = request.query_params.get("status_id")
         sub_dept_id = request.query_params.get("sub_dept_id")
         cata_id = request.query_params.get("cata_id")
+        grade_id = request.query_params.get("grade_id")
         is_active_raw = request.query_params.get("is_active")
         try:
             is_active = int(is_active_raw) if is_active_raw is not None else None
@@ -120,6 +121,7 @@ def employee_list(
             "sub_dept_id": int(sub_dept_id) if sub_dept_id else None,
             "is_active": is_active,
             "cata_id": int(cata_id) if cata_id else None,
+            "grade_id": int(grade_id) if grade_id else None,
             "f_emp_code": _like_param("f_emp_code"),
             "f_full_name": _like_param("f_full_name"),
             "f_designation": _like_param("f_designation"),
@@ -229,6 +231,7 @@ def employee_create_setup(
             "branches": [],
             "categories": [],
             "contractors": [],
+            "grades": [],
         }
         for r in rows:
             m = r._mapping

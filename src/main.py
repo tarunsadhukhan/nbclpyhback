@@ -47,6 +47,7 @@ from src.inventory.issue import router as issue_router
 from src.inventory.reports import router as inventory_reports_router
 from src.hrms.reports import router as hrms_reports_router
 from src.hrms.nbjclAttendanceReports import router as nbjcl_attendance_reports_router
+from src.hrms.nbjclreports import router as nbjcl_reports_router
 
 from src.masters.items import router as item_router
 from src.masters.warehouse import router as warehouse_router
@@ -159,8 +160,12 @@ from src.hrms.windingIncentive import router as hrms_winding_incentive_router
 from src.hrms.cashHands import router as hrms_cash_hands_router
 from src.hrms.canteenDetails import router as hrms_canteen_details_router
 from src.hrms.electricData import router as hrms_electric_data_router
+from src.hrms.payAdjustments import router as hrms_pay_adjustments_router
+from src.hrms.holidayMaster import router as hrms_holiday_master_router
+from src.hrms.holidayProcess import router as hrms_holiday_process_router
 from src.hrms.loanTransactions import router as hrms_loan_transactions_router
 from src.hrms.wagesSalaryProcess import router as hrms_wages_salary_process_router
+from src.hrms.staffSalaryProcess import router as hrms_staff_salary_process_router
 from src.common.attachments.router import router as attachments_router
 from src.config.cors import add_cors_middleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -326,6 +331,7 @@ app.include_router(issue_router, prefix="/api/inventoryIssue", tags=["inventory-
 app.include_router(inventory_reports_router, prefix="/api/inventoryReports", tags=["inventory-reports"])
 app.include_router(hrms_reports_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
 app.include_router(nbjcl_attendance_reports_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
+app.include_router(nbjcl_reports_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
 app.include_router(hrms_cash_hands_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
 
 # Sales routers
@@ -355,8 +361,12 @@ app.include_router(hrms_atten_incentive_router, prefix="/api/hrmsMasters", tags=
 app.include_router(hrms_winding_incentive_router, prefix="/api/hrmsMasters", tags=["hrms-masters"])
 app.include_router(hrms_canteen_details_router, prefix="/api/hrms", tags=["hrms-canteen-details"])
 app.include_router(hrms_electric_data_router, prefix="/api/hrms", tags=["hrms-electric-data"])
+app.include_router(hrms_pay_adjustments_router, prefix="/api/hrms", tags=["hrms-pay-adjustments"])
+app.include_router(hrms_holiday_master_router, prefix="/api/hrms", tags=["hrms-holiday-master"])
+app.include_router(hrms_holiday_process_router, prefix="/api/hrms", tags=["hrms-holiday-process"])
 app.include_router(hrms_loan_transactions_router, prefix="/api/hrms", tags=["hrms-loan-transactions"])
 app.include_router(hrms_wages_salary_process_router, prefix="/api/hrms", tags=["hrms-wages-salary-process"])
+app.include_router(hrms_staff_salary_process_router, prefix="/api/hrms", tags=["hrms-staff-salary-process"])
 
 # Accounting routers
 app.include_router(accounting_router, prefix="/api/accounting", tags=["accounting"])

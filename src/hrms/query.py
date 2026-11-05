@@ -34,16 +34,23 @@ def get_employee_list(branch_ids=None):
             des.desig AS designation_name,
             b.branch_name,
             cat.cata_desc AS category_name,
+            g.grade_name,
             esi.esi_no,
             pf.pf_uan_no,
             COALESCE(p.mobile_no, c.mobile_no) AS mobile_no
         FROM hrms_ed_personal_details p
-        LEFT JOIN hrms_ed_official_details o ON o.eb_id = p.eb_id AND o.active = 1
+        -- Prefer the active official row; fall back to the latest one so inactive
+        -- employees (official row active=0) still show their emp_code.
+        LEFT JOIN hrms_ed_official_details o ON o.tbl_hrms_ed_official_detail_id = (
+            SELECT o2.tbl_hrms_ed_official_detail_id FROM hrms_ed_official_details o2
+            WHERE o2.eb_id = p.eb_id
+            ORDER BY o2.active DESC, o2.tbl_hrms_ed_official_detail_id DESC LIMIT 1)
         LEFT JOIN sub_dept_mst sd ON sd.sub_dept_id = o.sub_dept_id
         LEFT JOIN dept_mst d ON d.dept_id = sd.dept_id
         LEFT JOIN designation_mst des ON des.designation_id = o.designation_id
         LEFT JOIN branch_mst b ON b.branch_id = o.branch_id
         LEFT JOIN category_mst cat ON cat.cata_id = o.catagory_id
+        LEFT JOIN grade_table g ON g.grade_id = cat.grade_id
         LEFT JOIN hrms_ed_esi esi ON esi.eb_id = p.eb_id AND esi.active = 1
         LEFT JOIN hrms_ed_pf pf ON pf.eb_id = p.eb_id AND pf.active = 1
         LEFT JOIN hrms_ed_contact_details c ON c.eb_id = p.eb_id AND c.active = 1
@@ -57,6 +64,7 @@ def get_employee_list(branch_ids=None):
           AND (:sub_dept_id IS NULL OR o.sub_dept_id = :sub_dept_id)
           AND (:is_active IS NULL OR p.active = :is_active)
           AND (:cata_id IS NULL OR o.catagory_id = :cata_id)
+          AND (:grade_id IS NULL OR cat.grade_id = :grade_id)
           AND (:f_emp_code IS NULL OR o.emp_code LIKE :f_emp_code)
           AND (:f_full_name IS NULL OR CONCAT(p.first_name, ' ', COALESCE(p.middle_name, ''), ' ', COALESCE(p.last_name, '')) LIKE :f_full_name)
           AND (:f_designation IS NULL OR des.desig LIKE :f_designation)
@@ -76,8 +84,14 @@ def get_employee_list_count(branch_ids=None):
     return text(f"""
         SELECT COUNT(*) AS total
         FROM hrms_ed_personal_details p
-        LEFT JOIN hrms_ed_official_details o ON o.eb_id = p.eb_id AND o.active = 1
+        -- Prefer the active official row; fall back to the latest one so inactive
+        -- employees (official row active=0) still show their emp_code.
+        LEFT JOIN hrms_ed_official_details o ON o.tbl_hrms_ed_official_detail_id = (
+            SELECT o2.tbl_hrms_ed_official_detail_id FROM hrms_ed_official_details o2
+            WHERE o2.eb_id = p.eb_id
+            ORDER BY o2.active DESC, o2.tbl_hrms_ed_official_detail_id DESC LIMIT 1)
         LEFT JOIN designation_mst des ON des.designation_id = o.designation_id
+        LEFT JOIN category_mst cat ON cat.cata_id = o.catagory_id
         LEFT JOIN hrms_ed_esi esi ON esi.eb_id = p.eb_id AND esi.active = 1
         LEFT JOIN hrms_ed_pf pf ON pf.eb_id = p.eb_id AND pf.active = 1
         LEFT JOIN hrms_ed_contact_details c ON c.eb_id = p.eb_id AND c.active = 1
@@ -90,6 +104,7 @@ def get_employee_list_count(branch_ids=None):
           AND (:sub_dept_id IS NULL OR o.sub_dept_id = :sub_dept_id)
           AND (:is_active IS NULL OR p.active = :is_active)
           AND (:cata_id IS NULL OR o.catagory_id = :cata_id)
+          AND (:grade_id IS NULL OR cat.grade_id = :grade_id)
           AND (:f_emp_code IS NULL OR o.emp_code LIKE :f_emp_code)
           AND (:f_full_name IS NULL OR CONCAT(p.first_name, ' ', COALESCE(p.middle_name, ''), ' ', COALESCE(p.last_name, '')) LIKE :f_full_name)
           AND (:f_designation IS NULL OR des.desig LIKE :f_designation)
@@ -195,6 +210,8 @@ def get_employee_create_setup():
         SELECT 'categories', cata_id, cata_desc FROM category_mst WHERE (:branch_id IS NULL OR FIND_IN_SET(branch_id, :branch_id))
         UNION ALL
         SELECT 'contractors', cont_id, contractor_name FROM contractor_mst WHERE (:branch_id IS NULL OR FIND_IN_SET(branch_id, :branch_id))
+        UNION ALL
+        SELECT 'grades', grade_id, grade_name FROM grade_table
     """)
 
 
@@ -225,7 +242,12 @@ def get_reporting_employees():
                CONCAT(p.first_name, ' ', COALESCE(p.last_name, '')) AS name,
                o.emp_code
         FROM hrms_ed_personal_details p
-        LEFT JOIN hrms_ed_official_details o ON o.eb_id = p.eb_id AND o.active = 1
+        -- Prefer the active official row; fall back to the latest one so inactive
+        -- employees (official row active=0) still show their emp_code.
+        LEFT JOIN hrms_ed_official_details o ON o.tbl_hrms_ed_official_detail_id = (
+            SELECT o2.tbl_hrms_ed_official_detail_id FROM hrms_ed_official_details o2
+            WHERE o2.eb_id = p.eb_id
+            ORDER BY o2.active DESC, o2.tbl_hrms_ed_official_detail_id DESC LIMIT 1)
         WHERE FIND_IN_SET(p.branch_id, :branch_id) AND p.active = 1 AND p.status_id != 6
         ORDER BY p.first_name
     """)

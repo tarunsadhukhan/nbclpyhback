@@ -15,7 +15,7 @@ import sys
 
 import pymysql
 
-HOST = os.environ.get("DATABASE_HOST", "45.58.59.64")
+HOST = os.environ.get("DATABASE_HOST", "189.72.144.77")
 PORT = int(os.environ.get("DATABASE_PORT", "3306"))
 USER = os.environ.get("DATABASE_USER", "Tarun")
 PASSWORD = os.environ.get("DATABASE_PASSWORD", "")

@@ -6,10 +6,9 @@ services:
     image: ghcr.io/tarunsadhukhan/nbclerp3be:latest
     container_name: nbclerp-backend
     restart: unless-stopped
-    # Host 8001 -> container 8000. Two consumers of :8001, both cross-host now
-    # that the frontend lives on its own VPS:
-    #   - the Next.js server-side proxy  (NEXT_PUBLIC_BACKENDHOST=http://45.58.59.64:8001)
-    #   - the mobile app
+    # Host 8001 -> container 8000, for the mobile app. The Next.js server-side
+    # proxy shares this VPS and reaches us at http://nbclerp-backend:8000 over
+    # the nbclerp network instead.
     # nginx also fronts :8001 on port 80 for nbjclapi.punrasargroup.com; vhost
     # is version-controlled at deploy/nginx/nbjclapi.punrasargroup.com.conf.
     ports:
