@@ -14,7 +14,7 @@ VoWERP3 Backend is a **multi-tenant ERP system** built with **FastAPI** and **SQ
 
 Everything discoverable from from one place. Paths are repo-relative; the frontend repo is `../vowerp3ui`.
 
-### Documentation map1
+### Documentation map
 
 | Path | Purpose |
 |------|---------|
