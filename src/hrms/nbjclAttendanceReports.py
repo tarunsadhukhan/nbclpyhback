@@ -237,8 +237,14 @@ def _fortnight(db, b, f, t, extra, merge: bool):
         r["k_dept"] = f"{r['dept_code']} {r['dept_name']}"
     det = _pivot_dates(rows, ["k_dept", "ecode", "ename", "work_type"], "hrs", days)
     det.sort(key=lambda d: (d["k_dept"], d["ecode"], d["work_type"]))
+    # Sl No restarts per department; every line (DUTY and OT) gets its own number
+    prev, n = None, 0
+    for d in det:
+        n = n + 1 if d["k_dept"] == prev else 1
+        d["slno"], prev = n, d["k_dept"]
     sums = [f"d{i}" for i in range(len(days))] + ["total"]
-    cols = [_col("grp", "Department", width=190), _col("ecode", "ECode", width=90), _col("ename", "EName", width=200),
+    cols = [_col("grp", "Department", width=190), _col("slno", "Sl No", width=70), _col("ecode", "ECode", width=90),
+            _col("ename", "EName", width=200),
             _col("work_type", "WType", width=70), *_day_cols(days), _num("total", "Total")]
     return cols, _layout(det, [lambda d: d["k_dept"]], sums, "grp", "ecode")
 

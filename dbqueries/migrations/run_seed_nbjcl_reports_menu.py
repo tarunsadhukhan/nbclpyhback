@@ -13,6 +13,8 @@ menu_mst.menu_name is UNIQUE, so a name already used by another menu gets a
 Usage (dry run prints the plan and writes nothing):
     python dbqueries/migrations/run_seed_nbjcl_reports_menu.py --db nbjcl --role slssuperadmin
     python dbqueries/migrations/run_seed_nbjcl_reports_menu.py --db nbjcl --role slssuperadmin --apply
+    python dbqueries/migrations/run_seed_nbjcl_reports_menu.py --db winsome --set winsome --role slssuperadmin --apply
+    (--set winsome seeds HRMS -> Winsome Reports, hrms/winsomereports; rollback below with that path)
 
 Idempotent: rows are matched on menu_path (groups: on parent + name).
 Rollback:
@@ -31,11 +33,10 @@ import re
 import pymysql
 from dotenv import dotenv_values
 
-HUB_NAME, HUB_PATH, HRMS_PATH = "NBJCL Reports", "hrms/nbjclreports", "hrms"
-SUFFIX = " (NBJCL)"
+HRMS_PATH = "hrms"
 
 # Names are kept exactly as the legacy tree spells them (typos included).
-TREE = [
+NBJCL_TREE = [
     ("Attendance Register", [
         "Attendance Work Type Wise Details",
         "Attendance Fort Night Wise",
@@ -132,6 +133,79 @@ TREE = [
 ]
 
 
+# Winsome legacy ORPSMTEye (Smart_Eye_Jute_Purnasar_Winsome_Live), by ReportSLNo / NodeID.
+WINSOME_TREE = [
+    ("Attendance Register", [
+        "Attendance WorkType Wise Summary",
+        "Attendance Work Type Wise Details",
+        "Attendance ECode Wise Details",
+        "Attendance Fort Night Wise",
+        "Attendance Fort Night Wise MERGE",
+        "Attendance Fort Night Wise Shift Wise",
+        "Attendance Register (MANUAL)",
+        "Gate Pass Register",
+        "Department Wise Summary",
+        "Occupation Wise Summary",
+        "Dept. Wise. Ocp. Wise Hands Summary",
+    ]),
+    ("Registeration", [
+        "Registered Employee Details",
+        "Pending For Registeration Summary",
+        "Pending For Registeration Details",
+        "Registered Employee User Wise Date Wise",
+    ]),
+    ("Wages", [
+        "Worker Daily PaySheet",
+        "Daily Provisional Wages Sheet",
+        "Wages PaySheet",
+        "Wages PaySheet [ OT ]",
+        "Wages PaySlip",
+        "Wages PaySlip Hindi",
+        "Wages PaySlip [ OT ]",
+        "Department Wise Wages Summary",
+        "Department Wise Wages Summary [ OT ]",
+        "Bonus Register",
+        "Bonus Slip",
+    ]),
+    ("Loan & Advances", [
+        "PF Loan Register Summay",
+        "PF Loan Register Fortnight Wise",
+        "PF Loan Register Worker Wise",
+        "Advance Register Summary",
+        "New Loan Check List",
+    ]),
+    ("PF & ESI Reports", [
+        "PF Contribution Ledger",
+        "PF Contribution Ledger - Employee Wise",
+        "PF & ESI Payable [ Month Wise ]",
+        "PF Transaction Details",
+        "PF Emp. Wise Month Wise Transaction [ PF Card ]",
+        "Employee Provident Fund Statement [ PF Slip ]",
+    ]),
+    ("HTML Reports", [
+        "Worker List with Photo",
+    ]),
+    ("Leave", [
+        "Leave Register [ PL ]",
+        "Leave Register [ CL ]",
+        "Leave Summary",
+        "Leave Details",
+    ]),
+    ("EXCEL", [
+        "Pension Statement",
+        "ESI Statement",
+        "ECR Statement",
+        "Bank Statement",
+    ]),
+]
+
+# --set -> (hub name, hub path, suffix for names already used, tree, hub order_by under HRMS)
+SETS = {
+    "nbjcl": ("NBJCL Reports", "hrms/nbjclreports", " (NBJCL)", NBJCL_TREE, 3),
+    "winsome": ("Winsome Reports", "hrms/winsomereports", " (Winsome)", WINSOME_TREE, 5),
+}
+
+
 def camel(name: str) -> str:
     """'WORKERS DEPT-WISE LIST [ OT ]' -> 'workersDeptWiseListOt'."""
     words = re.findall(r"[A-Za-z0-9]+", name.replace("&", " and "))
@@ -141,9 +215,11 @@ def camel(name: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
+    ap.add_argument("--set", choices=SETS, default="nbjcl", help="which legacy report tree to seed")
     ap.add_argument("--role", required=True, help="roles_mst.role_name to grant full access")
     ap.add_argument("--apply", action="store_true", help="commit (default: dry run)")
     args = ap.parse_args()
+    HUB_NAME, HUB_PATH, SUFFIX, TREE, HUB_ORDER = SETS[args.set]
 
     paths = [f"{HUB_PATH}/{camel(g)}/{camel(n)}" for g, leaves in TREE for n in leaves]
     assert len(paths) == len(set(paths)), "duplicate generated menu_path"
@@ -200,7 +276,7 @@ def main() -> None:
         stats["grants"] += cur.rowcount
 
     # Hub copies the HRMS Reports hub row's shape (type 2 'custom', module 1).
-    hub_id = ensure(HUB_NAME, HUB_PATH, hrms_id, 2, None, 1, 3, None)
+    hub_id = ensure(HUB_NAME, HUB_PATH, hrms_id, 2, None, 1, HUB_ORDER, None)
     grant(hub_id)
     for gi, (group, leaves) in enumerate(TREE, start=1):
         gid = ensure(group, None, hub_id, None, None, None, gi * 10, None)

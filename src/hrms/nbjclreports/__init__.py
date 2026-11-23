@@ -48,63 +48,68 @@ def _date(value: str | None, name: str) -> date:
         raise HTTPException(status_code=400, detail=f"{name} is required (YYYY-MM-DD)")
 
 
-@router.get("/nbjcl/reports/setup")
-def nbjcl_reports_setup(
-    request: Request,
-    db: Session = Depends(get_tenant_db),
-    token_data: dict = Depends(get_current_user_with_refresh),
-    branch_id: int | None = None,
-):
-    """Every report of the registry with its date mode and filter options for the branch."""
-    if not branch_id:
-        raise HTTPException(status_code=400, detail="branch_id is required")
-    out = {}
-    for k, v in REPORTS.items():
-        extra = v.get("extra")
-        if extra:
-            opts = extra["options"](db, int(branch_id)) if callable(extra["options"]) else extra["options"]
-            extra = {"label": extra["label"], "options": [{"value": "", "label": "All"}, *opts]}
-        out[k] = {"title": v["title"], "dates": v["dates"], "span": v.get("span", "fortnight"), "extra": extra}
-    return {"data": out}
+def mount_reports(router: APIRouter, base: str, reports: dict[str, dict], label: str) -> None:
+    """Register GET {base}/setup and GET {base}/{group}/{report} for a report registry (NBJCL, Winsome...)."""
+
+    @router.get(f"{base}/setup", name=f"{label}_reports_setup")
+    def reports_setup(
+        request: Request,
+        db: Session = Depends(get_tenant_db),
+        token_data: dict = Depends(get_current_user_with_refresh),
+        branch_id: int | None = None,
+    ):
+        """Every report of the registry with its date mode and filter options for the branch."""
+        if not branch_id:
+            raise HTTPException(status_code=400, detail="branch_id is required")
+        out = {}
+        for k, v in reports.items():
+            extra = v.get("extra")
+            if extra:
+                opts = extra["options"](db, int(branch_id)) if callable(extra["options"]) else extra["options"]
+                extra = {"label": extra["label"], "options": [{"value": "", "label": "All"}, *opts]}
+            out[k] = {"title": v["title"], "dates": v["dates"], "span": v.get("span", "fortnight"), "extra": extra}
+        return {"data": out}
+
+    @router.get(f"{base}/{{group}}/{{report}}", name=f"{label}_report")
+    def run_report(
+        group: str,
+        report: str,
+        request: Request,
+        db: Session = Depends(get_tenant_db),
+        token_data: dict = Depends(get_current_user_with_refresh),
+        branch_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        extra: str = "",
+    ):
+        """One report as display-ordered rows plus its column list (and an optional file to download)."""
+        spec = reports.get(f"{group}/{report}")
+        if not spec:
+            raise HTTPException(status_code=404, detail=f"Unknown report '{group}/{report}'")
+        if not branch_id:
+            raise HTTPException(status_code=400, detail="branch_id is required")
+        if spec["dates"] == "none":
+            f = t = date.today()
+        else:
+            t = _date(date_to, "date_to")
+            f = t if spec["dates"] == "single" else _date(date_from, "date_from")
+        if f > t:
+            raise HTTPException(status_code=400, detail="From date is after To date")
+        if (t - f).days > spec.get("max_days", 400):
+            raise HTTPException(status_code=400, detail=f"Select a period of {spec.get('max_days', 400)} days or less")
+        try:
+            built = spec["build"](db, int(branch_id), f, t, (extra or "").strip())
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001 — surfaced to the page
+            logger.error(f"{label} report {group}/{report} failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+        columns, rows = built[0], built[1]
+        fields = [c["field"] for c in columns]
+        data = [{"id": i, **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items() if k in fields}}
+                for i, r in enumerate(rows)]
+        return {"title": spec["title"], "columns": columns, "data": data, "total": len(data),
+                "download": built[2] if len(built) > 2 else None}
 
 
-@router.get("/nbjcl/reports/{group}/{report}")
-def nbjcl_report(
-    group: str,
-    report: str,
-    request: Request,
-    db: Session = Depends(get_tenant_db),
-    token_data: dict = Depends(get_current_user_with_refresh),
-    branch_id: int | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    extra: str = "",
-):
-    """One report as display-ordered rows plus its column list (and an optional file to download)."""
-    spec = REPORTS.get(f"{group}/{report}")
-    if not spec:
-        raise HTTPException(status_code=404, detail=f"Unknown report '{group}/{report}'")
-    if not branch_id:
-        raise HTTPException(status_code=400, detail="branch_id is required")
-    if spec["dates"] == "none":
-        f = t = date.today()
-    else:
-        t = _date(date_to, "date_to")
-        f = t if spec["dates"] == "single" else _date(date_from, "date_from")
-    if f > t:
-        raise HTTPException(status_code=400, detail="From date is after To date")
-    if (t - f).days > spec.get("max_days", 400):
-        raise HTTPException(status_code=400, detail=f"Select a period of {spec.get('max_days', 400)} days or less")
-    try:
-        built = spec["build"](db, int(branch_id), f, t, (extra or "").strip())
-    except HTTPException:
-        raise
-    except Exception as e:  # noqa: BLE001 — surfaced to the page
-        logger.error(f"NBJCL report {group}/{report} failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    columns, rows = built[0], built[1]
-    fields = [c["field"] for c in columns]
-    data = [{"id": i, **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items() if k in fields}}
-            for i, r in enumerate(rows)]
-    return {"title": spec["title"], "columns": columns, "data": data, "total": len(data),
-            "download": built[2] if len(built) > 2 else None}
+mount_reports(router, "/nbjcl/reports", REPORTS, "nbjcl")

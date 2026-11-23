@@ -48,6 +48,7 @@ from src.inventory.reports import router as inventory_reports_router
 from src.hrms.reports import router as hrms_reports_router
 from src.hrms.nbjclAttendanceReports import router as nbjcl_attendance_reports_router
 from src.hrms.nbjclreports import router as nbjcl_reports_router
+from src.hrms.winsomereports import router as winsome_reports_router
 
 from src.masters.items import router as item_router
 from src.masters.warehouse import router as warehouse_router
@@ -68,6 +69,7 @@ from src.production.beaming import router as production_beaming_router
 from src.production.press import router as production_press_router
 from src.production.weaving import router as production_weaving_router
 from src.production.finishing import router as production_finishing_router
+from src.production.winsomeProduction import router as winsome_production_router
 from src.masters.contractor import router as contractor_router
 from src.masters.bankDetails import router as bank_details_router
 from src.masters.itemBom import router as item_bom_router
@@ -165,6 +167,9 @@ from src.hrms.holidayMaster import router as hrms_holiday_master_router
 from src.hrms.holidayProcess import router as hrms_holiday_process_router
 from src.hrms.loanTransactions import router as hrms_loan_transactions_router
 from src.hrms.wagesSalaryProcess import router as hrms_wages_salary_process_router
+from src.hrms.winsomeWagesProcess import router as hrms_winsome_wages_router
+from src.hrms.winsomeGratuity import router as hrms_winsome_gratuity_router
+from src.hrms.winsomeAttendanceProcess import router as hrms_winsome_atten_router
 from src.hrms.staffSalaryProcess import router as hrms_staff_salary_process_router
 from src.common.attachments.router import router as attachments_router
 from src.config.cors import add_cors_middleware
@@ -241,6 +246,7 @@ app.include_router(production_beaming_router, prefix="/api/production", tags=["p
 app.include_router(production_press_router, prefix="/api/production", tags=["production"])
 app.include_router(production_weaving_router, prefix="/api/production", tags=["production"])
 app.include_router(production_finishing_router, prefix="/api/production", tags=["production"])
+app.include_router(winsome_production_router, prefix="/api/winsomeProduction", tags=["production"])
 app.include_router(contractor_router, prefix="/api/contractorMaster", tags=["masters-contractor"])
 app.include_router(bank_details_router, prefix="/api/bankDetailsMaster", tags=["masters-bank-details"])
 app.include_router(item_bom_router, prefix="/api/itemBomMaster", tags=["masters-item-bom"])
@@ -332,6 +338,7 @@ app.include_router(inventory_reports_router, prefix="/api/inventoryReports", tag
 app.include_router(hrms_reports_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
 app.include_router(nbjcl_attendance_reports_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
 app.include_router(nbjcl_reports_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
+app.include_router(winsome_reports_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
 app.include_router(hrms_cash_hands_router, prefix="/api/hrmsReports", tags=["hrms-reports"])
 
 # Sales routers
@@ -366,6 +373,9 @@ app.include_router(hrms_holiday_master_router, prefix="/api/hrms", tags=["hrms-h
 app.include_router(hrms_holiday_process_router, prefix="/api/hrms", tags=["hrms-holiday-process"])
 app.include_router(hrms_loan_transactions_router, prefix="/api/hrms", tags=["hrms-loan-transactions"])
 app.include_router(hrms_wages_salary_process_router, prefix="/api/hrms", tags=["hrms-wages-salary-process"])
+app.include_router(hrms_winsome_wages_router, prefix="/api/hrms", tags=["hrms-winsome-wages"])
+app.include_router(hrms_winsome_gratuity_router, prefix="/api/winsomeGratuity", tags=["hrms-winsome-gratuity"])
+app.include_router(hrms_winsome_atten_router, prefix="/api/hrms", tags=["hrms-winsome-attendance"])
 app.include_router(hrms_staff_salary_process_router, prefix="/api/hrms", tags=["hrms-staff-salary-process"])
 
 # Accounting routers

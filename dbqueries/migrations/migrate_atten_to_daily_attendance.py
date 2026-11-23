@@ -15,6 +15,13 @@ Mapping (verified against the manually entered Sep 1-12 rows): emp_code -> hrms_
 WShift A/B/C -> spell_id 109/110/108, dept_code -> mirrored sub_dept_mst, ocp_code -> designation by
 (department, normalised name) with the existing rows' mapping taking precedence, mch1/mch2 ->
 machine_mst.mech_code. working_hours = Work_HR + GatePass_HR, idle_hours = GatePass_HR. DUTY -> type R / mark P / status 3 (approved); VOUCHER rows are skipped.
+
+--skip-existing (Winsome, where the app already records live attendance): no backup/delete; legacy rows whose
+(employee, date, spell) already exist in the tenant are reported as duplicates and skipped, the rest inserted.
+  TENANT_DB=winsome BRANCH_ID=110 WORK_TYPES=DUTY,OT MSSQL_CONN="DRIVER={ODBC Driver 17 for SQL Server};
+  SERVER=162.245.218.10;DATABASE=Smart_Eye_Jute_Purnasar_Winsome_Live;UID=ERP;PWD=...;TrustServerCertificate=yes"
+  python ... 2026-09-01 2026-11-22 --skip-existing [--execute]
+WORK_TYPES (default DUTY): legacy work_type values to load; OT -> attendance_type O.
 """
 
 import collections
@@ -31,20 +38,24 @@ import pyodbc  # noqa: E402
 
 MSSQL = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=162.245.218.10;DATABASE=Smart_Eye_Jute_Northbrook_Live;" \
         "UID=ERP;PWD=%s;TrustServerCertificate=yes"
-SPELL = {"A": 109, "B": 110, "C": 108}
+ATT_TYPE = {"DUTY": "R", "OT": "O"}
 norm = lambda s: re.sub(r"\s+", " ", (s or "").strip().upper())  # noqa: E731
 
 
 def main() -> None:
     d0, d1 = sys.argv[1], sys.argv[2]
-    execute = "--execute" in sys.argv
+    execute, skip_existing = "--execute" in sys.argv, "--skip-existing" in sys.argv
     tenant, branch = os.getenv("TENANT_DB", "nbjcl"), int(os.getenv("BRANCH_ID", "87"))
+    work_types = {w.strip().upper() for w in os.getenv("WORK_TYPES", "DUTY").split(",")}
     my = pymysql.connect(host=os.environ["DATABASE_HOST"], user=os.environ["DATABASE_USER"],
                          password=os.environ["DATABASE_PASSWORD"], database=tenant, autocommit=False)
     cur = my.cursor()
-    ms = pyodbc.connect(MSSQL % os.environ["MSSQL_PWD"]).cursor()
+    ms = pyodbc.connect(os.getenv("MSSQL_CONN") or MSSQL % os.environ["MSSQL_PWD"]).cursor()
 
     # ── masters ────────────────────────────────────────────────────────
+    # ponytail: lowest id per code — nbjcl has A/B/C twice and its live ones are the older 109/110/108
+    cur.execute("SELECT spell_code, MIN(spell_id) FROM spell_mst GROUP BY spell_code")
+    SPELL = {r[0].strip(): r[1] for r in cur.fetchall()}
     cur.execute("SELECT emp_code, eb_id FROM hrms_ed_official_details WHERE branch_id=%s AND emp_code IS NOT NULL", (branch,))
     emp = {r[0].strip(): r[1] for r in cur.fetchall()}
     cur.execute("SELECT d.dept_code, s.sub_dept_id FROM sub_dept_mst s JOIN dept_mst d ON d.dept_id=s.dept_id "
@@ -68,7 +79,7 @@ def main() -> None:
     cur.execute("""SELECT o.emp_code, d.attendance_date, sp.spell_code, d.worked_designation_id
                    FROM daily_attendance d JOIN hrms_ed_official_details o ON o.eb_id=d.eb_id AND o.branch_id=%s
                    LEFT JOIN spell_mst sp ON sp.spell_id=d.spell_id
-                   WHERE d.branch_id=%s AND d.attendance_date BETWEEN %s AND %s AND d.attendance_source='M'
+                   WHERE d.branch_id=%s AND d.attendance_date BETWEEN %s AND %s
                      AND d.worked_designation_id IS NOT NULL""", (branch, branch, d0, d1))
     existing = {(r[0].strip(), str(r[1]), (r[2] or "").strip()): r[3] for r in cur.fetchall()}
 
@@ -83,18 +94,32 @@ def main() -> None:
             vote[r[3].strip()][existing[k]] += 1
     emp_map = {o: c.most_common(1)[0][0] for o, c in vote.items()}
 
+    # rows already in the tenant (live app entries) -> legacy duplicates are skipped, never overwritten
+    have = set()
+    if skip_existing:
+        cur.execute("SELECT eb_id, attendance_date, spell_id FROM daily_attendance "
+                    "WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
+        have = {(r[0], r[1], r[2]) for r in cur.fetchall()}
+        cur.execute("""SELECT COUNT(*), COALESCE(SUM(c), 0) FROM (SELECT COUNT(*) c FROM daily_attendance
+                       WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s
+                       GROUP BY eb_id, attendance_date, spell_id HAVING c > 1) x""", (branch, d0, d1))
+        print("tenant's own duplicates (same employee/date/spell, left as is): groups %s rows %s" % cur.fetchone())
+
     rows, ebmc, skipped = [], [], collections.Counter()
     for r in legacy:
         lid, e, dpt, ocp, m1, m2, wt, wdate, wtime, shift, shr, gp, whr = r
-        e, dpt, ocp, shift = e.strip(), dpt.strip(), ocp.strip(), (shift or "").strip()
-        if (wt or "").strip().upper() != "DUTY":
-            skipped["non-DUTY (" + (wt or "").strip() + ")"] += 1
+        e, dpt, ocp, shift, wt = e.strip(), dpt.strip(), ocp.strip(), (shift or "").strip(), (wt or "").strip().upper()
+        if wt not in work_types:
+            skipped["work_type " + wt] += 1
             continue
         if e not in emp:
             skipped["unknown employee " + e] += 1
             continue
         if shift not in SPELL or dpt not in subdept:
             skipped["unmapped shift/dept"] += 1
+            continue
+        if (emp[e], wdate, SPELL[shift]) in have:
+            skipped["duplicate of existing tenant row"] += 1
             continue
         des = emp_map.get(ocp)
         if des is None:
@@ -105,7 +130,7 @@ def main() -> None:
         t = (wtime or "00:00:00").strip()
         # working_hours is gross (Work_HR + GatePass_HR); idle_hours = GatePass_HR, so net = working - idle
         rows.append((lid, emp[e], wdate, SPELL[shift], float(shr or 0), subdept[dpt], des, float(whr or 0) + float(gp or 0),
-                     float(gp or 0), f"{wdate} {t}"))
+                     float(gp or 0), f"{wdate} {t}", ATT_TYPE[wt]))
         for m in {m1.strip(), m2.strip()}:
             if m in mach:
                 ebmc.append((lid, mach[m]))
@@ -117,7 +142,8 @@ def main() -> None:
     cur.execute("SELECT COUNT(*) FROM pay_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
     n_pay = cur.fetchone()[0]
     print(f"range {d0}..{d1} branch {branch} tenant {tenant}")
-    print(f"will delete: daily_attendance {n_att}, daily_ebmc_attendance {n_mc}, pay_attendance {n_pay}")
+    print(f"{'keeps' if skip_existing else 'will delete'}: daily_attendance {n_att}, daily_ebmc_attendance {n_mc}, "
+          f"pay_attendance {n_pay}")
     print(f"legacy Atten rows {len(legacy)} -> insert daily_attendance {len(rows)}, daily_ebmc_attendance {len(ebmc)}")
     print("skipped:", dict(skipped))
     print("rows without designation:", sum(1 for r in rows if r[6] is None))
@@ -130,25 +156,26 @@ def main() -> None:
     wheres = {"daily_attendance": "branch_id=%s AND attendance_date BETWEEN %s AND %s",
               "daily_ebmc_attendance": "daily_atten_id IN (SELECT daily_atten_id FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s)",
               "pay_attendance": "branch_id=%s AND attendance_date BETWEEN %s AND %s"}
-    for tbl, where in wheres.items():  # machine rows are found through their parent (some lack attendace_date)
+    for tbl, where in ({} if skip_existing else wheres).items():  # machine rows: via parent (some lack attendace_date)
         cur.execute(f"CREATE TABLE bak_{stamp}_{tbl} AS SELECT * FROM {tbl} WHERE {where}", (branch, d0, d1))
         cur.execute(f"SELECT COUNT(*) FROM bak_{stamp}_{tbl}")
         print(f"backup bak_{stamp}_{tbl}: {cur.fetchone()[0]} rows")
     my.commit()
 
     try:
-        print("deleting old rows", flush=True)
-        cur.execute("DELETE FROM daily_ebmc_attendance WHERE daily_atten_id IN (SELECT daily_atten_id FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s)", (branch, d0, d1))
-        cur.execute("DELETE FROM pay_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
-        cur.execute("DELETE FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
+        if not skip_existing:
+            print("deleting old rows", flush=True)
+            cur.execute("DELETE FROM daily_ebmc_attendance WHERE daily_atten_id IN (SELECT daily_atten_id FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s)", (branch, d0, d1))
+            cur.execute("DELETE FROM pay_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
+            cur.execute("DELETE FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
         now = datetime.now()
         # eb_no carries the legacy Atten ID until the machine rows are linked
         cur.executemany("""INSERT INTO daily_attendance
               (eb_no, eb_id, attendance_date, attendance_source, attendance_type, attendance_mark, is_active, branch_id,
                spell_id, spell_hours, worked_department_id, worked_designation_id, status_id, working_hours,
                idle_hours, entry_time, update_date_time, created_date_time)
-              VALUES (%s,%s,%s,'M','R','P',1,%s,%s,%s,%s,%s,'3',%s,%s,%s,%s,%s)""",
-                        [(f"L{r[0]}", r[1], r[2], branch, r[3], r[4], r[5], r[6], r[7], r[8], r[9], now, now)
+              VALUES (%s,%s,%s,'M',%s,'P',1,%s,%s,%s,%s,%s,'3',%s,%s,%s,%s,%s)""",
+                        [(f"L{r[0]}", r[1], r[2], r[10], branch, r[3], r[4], r[5], r[6], r[7], r[8], r[9], now, now)
                          for r in rows])
         print("inserted daily_attendance, linking machines", flush=True)
         # indexed 'L<id>' key: the join then probes _mc per range row instead of scanning daily_attendance per machine
@@ -160,12 +187,11 @@ def main() -> None:
                      d.worked_designation_id, 1, NOW()
               FROM daily_attendance d JOIN _mc t ON t.k = d.eb_no
               WHERE d.branch_id=%s AND d.attendance_date BETWEEN %s AND %s""", (branch, d0, d1))
+        got_mc = cur.rowcount
         cur.execute("UPDATE daily_attendance SET eb_no=NULL WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s "
                     "AND eb_no LIKE 'L%%'", (branch, d0, d1))
         cur.execute("SELECT COUNT(*) FROM daily_attendance WHERE branch_id=%s AND attendance_date BETWEEN %s AND %s", (branch, d0, d1))
-        got = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM daily_ebmc_attendance WHERE branch_id=%s AND attendace_date BETWEEN %s AND %s", (branch, d0, d1))
-        got_mc = cur.fetchone()[0]
+        got = cur.fetchone()[0] - (n_att if skip_existing else 0)
         assert got == len(rows) and got_mc == len(ebmc), f"count mismatch {got}/{len(rows)} {got_mc}/{len(ebmc)}"
         my.commit()
         print(f"COMMITTED: daily_attendance {got}, daily_ebmc_attendance {got_mc}")
